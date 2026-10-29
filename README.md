@@ -17,6 +17,32 @@ A simpler alternative to the classic Source Record filter. Pick the sources you 
 - obs-websocket vendor requests for Stream Deck
 - Settings saved per OBS profile
 
+
+## Enable GitHub Actions (one-time)
+
+The first push could not create files under `.github/workflows/` because the
+GitHub CLI OAuth token is missing the `workflow` scope. Workflow YAML copies
+live in [`build-aux/github-workflows/`](build-aux/github-workflows/).
+
+**Easiest (GitHub website):**
+
+1. Open https://github.com/gamerdadtcg/obs-multi-source-record
+2. For each file in `build-aux/github-workflows/`, use **Add file → Create new file**
+   with path `.github/workflows/<same-name>` and paste the contents.
+   Start with `push.yaml` and `build-project.yaml` (required to build).
+3. After `push.yaml` exists on `main`, Actions will build Windows / macOS / Ubuntu.
+
+**Or via CLI on a machine where you can authorize:**
+
+```bash
+gh auth refresh -h github.com -s repo,workflow
+cd /path/to/obs-multi-source-record
+./build-aux/install-github-workflows.sh
+git add .github/workflows
+git commit -m "Add CI workflows"
+git push
+```
+
 ## Requirements
 
 - OBS Studio 30 or 31 (built against 31.1.1)
