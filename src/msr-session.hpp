@@ -15,6 +15,9 @@ the Free Software Foundation; either version 2 of the License, or
 #include <obs.h>
 #include <string>
 #include <atomic>
+#include <mutex>
+#include <vector>
+#include <cstdint>
 
 class MsrSession {
 public:
@@ -40,9 +43,16 @@ private:
 	void teardown();
 	std::string build_output_path() const;
 	const char *resolve_video_encoder_id() const;
+	void activate_source(obs_source_t *source);
+	void deactivate_sources();
 
 	static bool audio_input_callback(void *param, uint64_t start_ts_in, uint64_t end_ts_in, uint64_t *out_ts,
 					 uint32_t mixers, struct audio_output_data *mixes);
+	static void audio_capture_callback(void *param, obs_source_t *source, const struct audio_data *audio_data,
+					   bool muted);
+
+	void push_captured_audio(const struct audio_data *audio_data, bool muted);
+	bool pop_captured_audio(struct audio_output_data *mixes, uint32_t mixers, size_t channels, uint64_t *out_ts);
 
 	std::string source_name_;
 	MsrOrientation orientation_;
@@ -52,6 +62,10 @@ private:
 
 	obs_weak_source_t *weak_source_ = nullptr;
 	obs_weak_source_t *weak_extra_audio_ = nullptr;
+	obs_source_t *activated_source_ = nullptr;
+	obs_source_t *activated_extra_ = nullptr;
+	bool capture_cb_source_ = false;
+	bool capture_cb_extra_ = false;
 	obs_view_t *view_ = nullptr;
 	obs_source_t *private_scene_ = nullptr;
 	video_t *video_output_ = nullptr;
@@ -64,4 +78,14 @@ private:
 	uint32_t height_ = 0;
 	std::atomic<bool> active_{false};
 	std::atomic<bool> closing_{false};
+
+	std::mutex audio_mutex_;
+	struct CapturedChunk {
+		uint64_t timestamp = 0;
+		size_t frames = 0;
+		size_t channels = 0;
+		std::vector<float> planar; /* frames * channels interleaved as ch0..chN per frame planar blocks */
+	};
+	std::vector<CapturedChunk> audio_queue_;
+	static constexpr size_t kMaxQueuedChunks = 64;
 };

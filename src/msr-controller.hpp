@@ -56,6 +56,8 @@ private:
 	static void ws_stop(obs_data_t *request_data, obs_data_t *response_data, void *priv);
 	static void ws_toggle(obs_data_t *request_data, obs_data_t *response_data, void *priv);
 	static void ws_status(obs_data_t *request_data, obs_data_t *response_data, void *priv);
+	static void ws_get_settings(obs_data_t *request_data, obs_data_t *response_data, void *priv);
+	static void ws_configure(obs_data_t *request_data, obs_data_t *response_data, void *priv);
 
 	std::string settings_path() const;
 	void notify_state();

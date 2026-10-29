@@ -69,7 +69,8 @@ void ensure_directory(char *path)
 #endif
 }
 
-void mix_source_audio(obs_source_t *source, struct audio_output_data *mixes, uint32_t mixers, size_t channels)
+void mix_source_audio_fallback(obs_source_t *source, struct audio_output_data *mixes, uint32_t mixers,
+			       size_t channels)
 {
 	if (!source || obs_source_removed(source))
 		return;
@@ -88,15 +89,20 @@ void mix_source_audio(obs_source_t *source, struct audio_output_data *mixes, uin
 			continue;
 		for (size_t ch = 0; ch < channels; ch++) {
 			float *out = mixes[mix_idx].data[ch];
-			float *in = audio.output[0].data[ch];
-			if (!in || !out)
+			if (!out)
 				continue;
-			for (size_t i = 0; i < AUDIO_OUTPUT_FRAMES; i++) {
-				out[i] += in[i];
-				if (out[i] > 1.0f)
-					out[i] = 1.0f;
-				if (out[i] < -1.0f)
-					out[i] = -1.0f;
+			/* Sum every source mixer track — track routing must not silence ISO files. */
+			for (size_t src_mix = 0; src_mix < MAX_AUDIO_MIXES; src_mix++) {
+				float *in = audio.output[src_mix].data[ch];
+				if (!in)
+					continue;
+				for (size_t i = 0; i < AUDIO_OUTPUT_FRAMES; i++) {
+					out[i] += in[i];
+					if (out[i] > 1.0f)
+						out[i] = 1.0f;
+					if (out[i] < -1.0f)
+						out[i] = -1.0f;
+				}
 			}
 		}
 	}
@@ -118,6 +124,114 @@ MsrSession::~MsrSession()
 	stop();
 }
 
+void MsrSession::activate_source(obs_source_t *source)
+{
+	if (!source)
+		return;
+	obs_source_inc_active(source);
+	obs_source_inc_showing(source);
+}
+
+void MsrSession::deactivate_sources()
+{
+	if (capture_cb_source_ && activated_source_) {
+		obs_source_remove_audio_capture_callback(activated_source_, audio_capture_callback, this);
+		capture_cb_source_ = false;
+	}
+	if (capture_cb_extra_ && activated_extra_) {
+		obs_source_remove_audio_capture_callback(activated_extra_, audio_capture_callback, this);
+		capture_cb_extra_ = false;
+	}
+	if (activated_source_) {
+		obs_source_dec_showing(activated_source_);
+		obs_source_dec_active(activated_source_);
+		obs_source_release(activated_source_);
+		activated_source_ = nullptr;
+	}
+	if (activated_extra_) {
+		obs_source_dec_showing(activated_extra_);
+		obs_source_dec_active(activated_extra_);
+		obs_source_release(activated_extra_);
+		activated_extra_ = nullptr;
+	}
+}
+
+void MsrSession::audio_capture_callback(void *param, obs_source_t *source, const struct audio_data *audio_data,
+					bool muted)
+{
+	UNUSED_PARAMETER(source);
+	auto *self = static_cast<MsrSession *>(param);
+	if (!self || self->closing_.load() || !audio_data)
+		return;
+	self->push_captured_audio(audio_data, muted);
+}
+
+void MsrSession::push_captured_audio(const struct audio_data *audio_data, bool muted)
+{
+	if (muted || !audio_data->frames)
+		return;
+
+	size_t ch_count = 0;
+	for (size_t ch = 0; ch < MAX_AV_PLANES; ch++) {
+		if (audio_data->data[ch])
+			ch_count = ch + 1;
+	}
+	if (ch_count == 0)
+		return;
+
+	CapturedChunk chunk;
+	chunk.timestamp = audio_data->timestamp;
+	chunk.frames = audio_data->frames;
+	chunk.channels = ch_count;
+	chunk.planar.resize(chunk.frames * chunk.channels, 0.0f);
+	for (size_t ch = 0; ch < ch_count; ch++) {
+		const float *in = (const float *)audio_data->data[ch];
+		if (!in)
+			continue;
+		for (size_t i = 0; i < chunk.frames; i++)
+			chunk.planar[ch * chunk.frames + i] = in[i];
+	}
+
+	std::lock_guard<std::mutex> lock(audio_mutex_);
+	if (audio_queue_.size() >= kMaxQueuedChunks)
+		audio_queue_.erase(audio_queue_.begin());
+	audio_queue_.push_back(std::move(chunk));
+}
+
+bool MsrSession::pop_captured_audio(struct audio_output_data *mixes, uint32_t mixers, size_t channels,
+				    uint64_t *out_ts)
+{
+	std::lock_guard<std::mutex> lock(audio_mutex_);
+	if (audio_queue_.empty())
+		return false;
+
+	CapturedChunk chunk = std::move(audio_queue_.front());
+	audio_queue_.erase(audio_queue_.begin());
+
+	const size_t frames = chunk.frames < AUDIO_OUTPUT_FRAMES ? chunk.frames : AUDIO_OUTPUT_FRAMES;
+	const size_t use_ch = chunk.channels < channels ? chunk.channels : channels;
+
+	for (size_t mix_idx = 0; mix_idx < MAX_AUDIO_MIXES; mix_idx++) {
+		if ((mixers & (1u << mix_idx)) == 0)
+			continue;
+		for (size_t ch = 0; ch < use_ch; ch++) {
+			float *out = mixes[mix_idx].data[ch];
+			if (!out)
+				continue;
+			const float *in = &chunk.planar[ch * chunk.frames];
+			for (size_t i = 0; i < frames; i++) {
+				out[i] += in[i];
+				if (out[i] > 1.0f)
+					out[i] = 1.0f;
+				if (out[i] < -1.0f)
+					out[i] = -1.0f;
+			}
+		}
+	}
+	*out_ts = chunk.timestamp;
+	return true;
+}
+
 bool MsrSession::audio_input_callback(void *param, uint64_t start_ts_in, uint64_t end_ts_in, uint64_t *out_ts,
 				      uint32_t mixers, struct audio_output_data *mixes)
 {
@@ -128,10 +242,18 @@ bool MsrSession::audio_input_callback(void *param, uint64_t start_ts_in, uint64_
 		return true;
 	}
 
+	const size_t channels = audio_output_get_channels(self->audio_output_);
+	uint64_t ts = 0;
+	if (self->pop_captured_audio(mixes, mixers, channels, &ts)) {
+		*out_ts = ts ? ts : start_ts_in;
+		return true;
+	}
+
+	/* Fallback: mixer-path audio if capture callback has not filled yet. */
 	obs_source_t *source = obs_weak_source_get_source(self->weak_source_);
 	obs_source_t *extra = obs_weak_source_get_source(self->weak_extra_audio_);
 
-	uint64_t ts = 0;
+	ts = 0;
 	if (source) {
 		ts = obs_source_get_audio_timestamp(source);
 		if (!ts && extra)
@@ -153,9 +275,8 @@ bool MsrSession::audio_input_callback(void *param, uint64_t start_ts_in, uint64_
 		return false;
 	}
 
-	const size_t channels = audio_output_get_channels(self->audio_output_);
-	mix_source_audio(source, mixes, mixers, channels);
-	mix_source_audio(extra, mixes, mixers, channels);
+	mix_source_audio_fallback(source, mixes, mixers, channels);
+	mix_source_audio_fallback(extra, mixes, mixers, channels);
 
 	*out_ts = ts;
 	obs_source_release(source);
@@ -247,21 +368,34 @@ bool MsrSession::setup_video()
 		obs_log(LOG_ERROR, "source '%s' not found", source_name_.c_str());
 		return false;
 	}
-	weak_source_ = obs_source_get_weak_source(source);
 
-	uint32_t src_w = obs_source_get_width(source);
-	uint32_t src_h = obs_source_get_height(source);
+	/* Activate before querying size — monitor/game capture report 0x0 while inactive. */
+	activate_source(source);
+	activated_source_ = source; /* takes ownership of the get_source ref */
+
+	uint32_t src_w = 0, src_h = 0;
+	for (int attempt = 0; attempt < 30; attempt++) {
+		src_w = obs_source_get_width(source);
+		src_h = obs_source_get_height(source);
+		if (src_w > 0 && src_h > 0)
+			break;
+		os_sleep_ms(10);
+	}
+
 	if (src_w == 0 || src_h == 0) {
-		obs_log(LOG_ERROR, "source '%s' has zero size", source_name_.c_str());
-		obs_source_release(source);
+		obs_log(LOG_ERROR, "source '%s' has zero size after activate (is capture available?)",
+			source_name_.c_str());
+		deactivate_sources();
 		return false;
 	}
 	src_w += (src_w & 1);
 	src_h += (src_h & 1);
 
+	weak_source_ = obs_source_get_weak_source(source);
+
 	view_ = obs_view_create();
 	if (!view_) {
-		obs_source_release(source);
+		deactivate_sources();
 		return false;
 	}
 
@@ -278,14 +412,13 @@ bool MsrSession::setup_video()
 		private_scene_ = obs_source_create_private("scene", "msr-vertical-scene", scene_settings);
 		obs_data_release(scene_settings);
 		if (!private_scene_) {
-			obs_source_release(source);
+			deactivate_sources();
 			return false;
 		}
 
 		obs_scene_t *scene = obs_scene_from_source(private_scene_);
 		obs_sceneitem_t *item = obs_scene_add(scene, source);
 
-		/* Center-crop source to 9:16 then scale to vertical canvas. */
 		const double target_aspect = (double)width_ / (double)height_;
 		const double src_aspect = (double)src_w / (double)src_h;
 		uint32_t crop_l = 0, crop_t = 0, crop_r = 0, crop_b = 0;
@@ -331,10 +464,10 @@ bool MsrSession::setup_video()
 	ovi.output_width = width_;
 	ovi.output_height = height_;
 	video_output_ = obs_view_add2(view_, &ovi);
-	obs_source_release(source);
 
 	if (!video_output_) {
 		obs_log(LOG_ERROR, "failed to create video output for '%s'", source_name_.c_str());
+		deactivate_sources();
 		return false;
 	}
 	return true;
@@ -345,13 +478,23 @@ bool MsrSession::setup_audio()
 	if (!extra_audio_name_.empty()) {
 		obs_source_t *extra = obs_get_source_by_name(extra_audio_name_.c_str());
 		if (extra) {
+			activate_source(extra);
+			activated_extra_ = extra;
 			weak_extra_audio_ = obs_source_get_weak_source(extra);
-			obs_source_release(extra);
+		} else {
+			obs_log(LOG_WARNING, "extra audio source '%s' not found", extra_audio_name_.c_str());
 		}
 	}
 
-	/* Capture audio DIRECTLY from the source via a private audio_output.
-	 * This avoids silent files when the source is only on mixer tracks 2/3/4. */
+	if (activated_source_) {
+		obs_source_add_audio_capture_callback(activated_source_, audio_capture_callback, this);
+		capture_cb_source_ = true;
+	}
+	if (activated_extra_) {
+		obs_source_add_audio_capture_callback(activated_extra_, audio_capture_callback, this);
+		capture_cb_extra_ = true;
+	}
+
 	struct audio_output_info oi = {};
 	oi.name = source_name_.c_str();
 	oi.speakers = SPEAKERS_STEREO;
@@ -428,24 +571,18 @@ bool MsrSession::start()
 		return true;
 
 	closing_.store(false);
+	{
+		std::lock_guard<std::mutex> lock(audio_mutex_);
+		audio_queue_.clear();
+	}
+
 	if (!setup_video() || !setup_audio() || !setup_encoders_and_output()) {
 		teardown();
 		return false;
 	}
 
-	obs_source_t *source = obs_weak_source_get_source(weak_source_);
-	if (source) {
-		obs_source_inc_showing(source);
-		obs_source_release(source);
-	}
-
 	if (!obs_output_start(file_output_)) {
 		obs_log(LOG_ERROR, "obs_output_start failed for '%s' (%s)", source_name_.c_str(), output_path_.c_str());
-		obs_source_t *s2 = obs_weak_source_get_source(weak_source_);
-		if (s2) {
-			obs_source_dec_showing(s2);
-			obs_source_release(s2);
-		}
 		teardown();
 		return false;
 	}
@@ -466,12 +603,6 @@ void MsrSession::stop()
 
 	if (file_output_ && obs_output_active(file_output_))
 		obs_output_stop(file_output_);
-
-	obs_source_t *source = obs_weak_source_get_source(weak_source_);
-	if (source) {
-		obs_source_dec_showing(source);
-		obs_source_release(source);
-	}
 
 	teardown();
 }
@@ -497,6 +628,7 @@ void MsrSession::teardown()
 		audio_output_ = nullptr;
 		owns_audio_output_ = false;
 	}
+	deactivate_sources();
 	if (view_) {
 		if (video_output_) {
 			obs_view_remove(view_);
@@ -517,5 +649,9 @@ void MsrSession::teardown()
 	if (weak_source_) {
 		obs_weak_source_release(weak_source_);
 		weak_source_ = nullptr;
+	}
+	{
+		std::lock_guard<std::mutex> lock(audio_mutex_);
+		audio_queue_.clear();
 	}
 }
