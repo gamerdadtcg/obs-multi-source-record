@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Multi Source Record</title>
+  <style>
+    body { font-family: sans-serif; color: #eee; background: #2d2d2d; margin: 12px; }
+    label { display: block; margin-top: 8px; font-size: 12px; }
+    input { width: 100%; box-sizing: border-box; margin-top: 4px; padding: 6px; }
+    .hint { font-size: 11px; color: #aaa; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <label>OBS WebSocket host <input id="host" value="127.0.0.1" /></label>
+  <label>Port <input id="port" value="4455" /></label>
+  <label>Password <input id="password" type="password" /></label>
+  <p class="hint">Requires OBS 28+ with obs-websocket enabled, and the Multi Source Record plugin loaded.</p>
+  <script>
+    let uuid = null, actionInfo = null, ws = null;
+    function sendSettings() {
+      if (!ws || !uuid) return;
+      ws.send(JSON.stringify({
+        event: "setSettings",
+        context: uuid,
+        payload: {
+          host: document.getElementById("host").value,
+          port: document.getElementById("port").value,
+          password: document.getElementById("password").value
+        }
+      }));
+    }
+    ["host","port","password"].forEach(id => {
+      document.getElementById(id).addEventListener("change", sendSettings);
+    });
+    window.connectElgatoStreamDeckSocket = function(port, pluginUUID, registerEvent, info, actionInfoStr) {
+      uuid = pluginUUID;
+      try { actionInfo = JSON.parse(actionInfoStr); } catch(e) {}
+      const s = (actionInfo && actionInfo.payload && actionInfo.payload.settings) || {};
+      if (s.host) document.getElementById("host").value = s.host;
+      if (s.port) document.getElementById("port").value = s.port;
+      if (s.password) document.getElementById("password").value = s.password;
+      ws = new WebSocket("ws://127.0.0.1:" + port);
+      ws.onopen = () => ws.send(JSON.stringify({ event: registerEvent, uuid: pluginUUID }));
+    };
+  </script>
+</body>
+</html>
