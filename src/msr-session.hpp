@@ -37,6 +37,97 @@ public:
 	const std::string &output_path() const { return output_path_; }
 
 private:
+	struct SampleFifo {
+		static constexpr size_t kChannels = 8;
+		static constexpr size_t kCapacity = 48000; /* 1s @ 48k */
+		std::vector<float> data[kChannels];
+		size_t channels = 0;
+		size_t read_pos = 0;
+		size_t write_pos = 0;
+		size_t size = 0;
+
+		void clear()
+		{
+			for (size_t ch = 0; ch < kChannels; ch++)
+				data[ch].clear();
+			channels = read_pos = write_pos = size = 0;
+		}
+
+		void ensure()
+		{
+			if (!data[0].empty())
+				return;
+			for (size_t ch = 0; ch < kChannels; ch++)
+				data[ch].assign(kCapacity, 0.0f);
+		}
+
+		void push_planar(const struct audio_data *audio_data)
+		{
+			size_t ch_count = 0;
+			for (size_t ch = 0; ch < MAX_AV_PLANES; ch++) {
+				if (audio_data->data[ch])
+					ch_count = ch + 1;
+			}
+			if (ch_count == 0 || !audio_data->frames)
+				return;
+			if (ch_count > kChannels)
+				ch_count = kChannels;
+			ensure();
+			if (ch_count > channels)
+				channels = ch_count;
+
+			for (uint32_t i = 0; i < audio_data->frames; i++) {
+				if (size >= kCapacity) {
+					read_pos = (read_pos + 1) % kCapacity;
+					size--;
+				}
+				for (size_t ch = 0; ch < ch_count; ch++) {
+					const float *in = (const float *)audio_data->data[ch];
+					float s = in ? in[i] : 0.0f;
+					if (s > 1.0f)
+						s = 1.0f;
+					if (s < -1.0f)
+						s = -1.0f;
+					data[ch][write_pos] = s;
+				}
+				for (size_t ch = ch_count; ch < channels; ch++)
+					data[ch][write_pos] = 0.0f;
+				write_pos = (write_pos + 1) % kCapacity;
+				size++;
+			}
+		}
+
+		bool pop_mixed_into(struct audio_output_data *mixes, uint32_t mixers, size_t out_channels, bool drain_partial)
+		{
+			if (size < AUDIO_OUTPUT_FRAMES) {
+				if (!drain_partial || size == 0)
+					return false;
+			}
+			const size_t frames = size < AUDIO_OUTPUT_FRAMES ? size : AUDIO_OUTPUT_FRAMES;
+			const size_t use_ch = channels < out_channels ? channels : out_channels;
+			for (size_t i = 0; i < frames; i++) {
+				for (size_t ch = 0; ch < use_ch; ch++) {
+					float s = data[ch][read_pos];
+					for (size_t mix_idx = 0; mix_idx < MAX_AUDIO_MIXES; mix_idx++) {
+						if ((mixers & (1u << mix_idx)) == 0)
+							continue;
+						float *out = mixes[mix_idx].data[ch];
+						if (!out)
+							continue;
+						out[i] += s;
+						if (out[i] > 1.0f)
+							out[i] = 1.0f;
+						if (out[i] < -1.0f)
+							out[i] = -1.0f;
+					}
+				}
+				read_pos = (read_pos + 1) % kCapacity;
+				size--;
+			}
+			return frames > 0;
+		}
+	};
+
 	bool setup_video();
 	bool setup_audio();
 	bool setup_encoders_and_output();
@@ -51,8 +142,8 @@ private:
 	static void audio_capture_callback(void *param, obs_source_t *source, const struct audio_data *audio_data,
 					   bool muted);
 
-	void push_captured_audio(const struct audio_data *audio_data, bool muted);
-	bool pop_captured_audio(struct audio_output_data *mixes, uint32_t mixers, size_t channels, uint64_t *out_ts);
+	void push_captured_audio(obs_source_t *source, const struct audio_data *audio_data, bool muted);
+	bool pop_captured_audio(struct audio_output_data *mixes, uint32_t mixers, size_t channels);
 
 	std::string source_name_;
 	MsrOrientation orientation_;
@@ -80,12 +171,7 @@ private:
 	std::atomic<bool> closing_{false};
 
 	std::mutex audio_mutex_;
-	struct CapturedChunk {
-		uint64_t timestamp = 0;
-		size_t frames = 0;
-		size_t channels = 0;
-		std::vector<float> planar; /* frames * channels interleaved as ch0..chN per frame planar blocks */
-	};
-	std::vector<CapturedChunk> audio_queue_;
-	static constexpr size_t kMaxQueuedChunks = 64;
+	SampleFifo fifo_main_;
+	SampleFifo fifo_extra_;
+	bool have_capture_audio_ = false;
 };

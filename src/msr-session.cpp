@@ -69,45 +69,6 @@ void ensure_directory(char *path)
 #endif
 }
 
-void mix_source_audio_fallback(obs_source_t *source, struct audio_output_data *mixes, uint32_t mixers,
-			       size_t channels)
-{
-	if (!source || obs_source_removed(source))
-		return;
-	if (obs_source_audio_pending(source))
-		return;
-
-	const uint32_t flags = obs_source_get_output_flags(source);
-	if ((flags & OBS_SOURCE_AUDIO) == 0 && (flags & OBS_SOURCE_COMPOSITE) == 0)
-		return;
-
-	struct obs_source_audio_mix audio;
-	obs_source_get_audio_mix(source, &audio);
-
-	for (size_t mix_idx = 0; mix_idx < MAX_AUDIO_MIXES; mix_idx++) {
-		if ((mixers & (1u << mix_idx)) == 0)
-			continue;
-		for (size_t ch = 0; ch < channels; ch++) {
-			float *out = mixes[mix_idx].data[ch];
-			if (!out)
-				continue;
-			/* Sum every source mixer track — track routing must not silence ISO files. */
-			for (size_t src_mix = 0; src_mix < MAX_AUDIO_MIXES; src_mix++) {
-				float *in = audio.output[src_mix].data[ch];
-				if (!in)
-					continue;
-				for (size_t i = 0; i < AUDIO_OUTPUT_FRAMES; i++) {
-					out[i] += in[i];
-					if (out[i] > 1.0f)
-						out[i] = 1.0f;
-					if (out[i] < -1.0f)
-						out[i] = -1.0f;
-				}
-			}
-		}
-	}
-}
-
 } // namespace
 
 MsrSession::MsrSession(std::string source_name, MsrOrientation orientation, std::string extra_audio,
@@ -159,77 +120,44 @@ void MsrSession::deactivate_sources()
 void MsrSession::audio_capture_callback(void *param, obs_source_t *source, const struct audio_data *audio_data,
 					bool muted)
 {
-	UNUSED_PARAMETER(source);
 	auto *self = static_cast<MsrSession *>(param);
 	if (!self || self->closing_.load() || !audio_data)
 		return;
-	self->push_captured_audio(audio_data, muted);
+	self->push_captured_audio(source, audio_data, muted);
 }
 
-void MsrSession::push_captured_audio(const struct audio_data *audio_data, bool muted)
+void MsrSession::push_captured_audio(obs_source_t *source, const struct audio_data *audio_data, bool muted)
 {
 	if (muted || !audio_data->frames)
 		return;
 
-	size_t ch_count = 0;
-	for (size_t ch = 0; ch < MAX_AV_PLANES; ch++) {
-		if (audio_data->data[ch])
-			ch_count = ch + 1;
-	}
-	if (ch_count == 0)
-		return;
-
-	CapturedChunk chunk;
-	chunk.timestamp = audio_data->timestamp;
-	chunk.frames = audio_data->frames;
-	chunk.channels = ch_count;
-	chunk.planar.resize(chunk.frames * chunk.channels, 0.0f);
-	for (size_t ch = 0; ch < ch_count; ch++) {
-		const float *in = (const float *)audio_data->data[ch];
-		if (!in)
-			continue;
-		for (size_t i = 0; i < chunk.frames; i++)
-			chunk.planar[ch * chunk.frames + i] = in[i];
-	}
-
 	std::lock_guard<std::mutex> lock(audio_mutex_);
-	if (audio_queue_.size() >= kMaxQueuedChunks)
-		audio_queue_.erase(audio_queue_.begin());
-	audio_queue_.push_back(std::move(chunk));
+	have_capture_audio_ = true;
+	/* Keep source and extra on separate FIFOs so their bursts mix in time
+	 * on pop instead of serializing as alternating chunks. */
+	if (source == activated_extra_)
+		fifo_extra_.push_planar(audio_data);
+	else
+		fifo_main_.push_planar(audio_data);
 }
 
-bool MsrSession::pop_captured_audio(struct audio_output_data *mixes, uint32_t mixers, size_t channels,
-				    uint64_t *out_ts)
+bool MsrSession::pop_captured_audio(struct audio_output_data *mixes, uint32_t mixers, size_t channels)
 {
 	std::lock_guard<std::mutex> lock(audio_mutex_);
-	if (audio_queue_.empty())
-		return false;
-
-	CapturedChunk chunk = std::move(audio_queue_.front());
-	audio_queue_.erase(audio_queue_.begin());
-
-	const size_t frames = chunk.frames < AUDIO_OUTPUT_FRAMES ? chunk.frames : AUDIO_OUTPUT_FRAMES;
-	const size_t use_ch = chunk.channels < channels ? chunk.channels : channels;
-
-	for (size_t mix_idx = 0; mix_idx < MAX_AUDIO_MIXES; mix_idx++) {
-		if ((mixers & (1u << mix_idx)) == 0)
-			continue;
-		for (size_t ch = 0; ch < use_ch; ch++) {
-			float *out = mixes[mix_idx].data[ch];
-			if (!out)
-				continue;
-			const float *in = &chunk.planar[ch * chunk.frames];
-			for (size_t i = 0; i < frames; i++) {
-				out[i] += in[i];
-				if (out[i] > 1.0f)
-					out[i] = 1.0f;
-				if (out[i] < -1.0f)
-					out[i] = -1.0f;
-			}
-		}
+	const size_t need = AUDIO_OUTPUT_FRAMES;
+	bool any = false;
+	/* Consume a full period from each FIFO that is ready. Do not block one
+	 * FIFO on the other — that reintroduced silence holes when mic/game
+	 * capture burst sizes differed. */
+	if (fifo_main_.size >= need) {
+		fifo_main_.pop_mixed_into(mixes, mixers, channels, false);
+		any = true;
 	}
-	*out_ts = chunk.timestamp;
-	return true;
+	if (fifo_extra_.size >= need) {
+		fifo_extra_.pop_mixed_into(mixes, mixers, channels, false);
+		any = true;
+	}
+	return any;
 }
 
 bool MsrSession::audio_input_callback(void *param, uint64_t start_ts_in, uint64_t end_ts_in, uint64_t *out_ts,
@@ -237,50 +165,14 @@ bool MsrSession::audio_input_callback(void *param, uint64_t start_ts_in, uint64_
 {
 	UNUSED_PARAMETER(end_ts_in);
 	auto *self = static_cast<MsrSession *>(param);
-	if (!self || self->closing_.load()) {
-		*out_ts = start_ts_in;
+	/* Lock private audio_output to its own clock. Returning source capture
+	 * timestamps caused ~263-sample silence holes every 1024 frames. */
+	*out_ts = start_ts_in;
+	if (!self || self->closing_.load())
 		return true;
-	}
 
 	const size_t channels = audio_output_get_channels(self->audio_output_);
-	uint64_t ts = 0;
-	if (self->pop_captured_audio(mixes, mixers, channels, &ts)) {
-		*out_ts = ts ? ts : start_ts_in;
-		return true;
-	}
-
-	/* Fallback: mixer-path audio if capture callback has not filled yet. */
-	obs_source_t *source = obs_weak_source_get_source(self->weak_source_);
-	obs_source_t *extra = obs_weak_source_get_source(self->weak_extra_audio_);
-
-	ts = 0;
-	if (source) {
-		ts = obs_source_get_audio_timestamp(source);
-		if (!ts && extra)
-			ts = obs_source_get_audio_timestamp(extra);
-	} else if (extra) {
-		ts = obs_source_get_audio_timestamp(extra);
-	}
-
-	if (!ts) {
-		*out_ts = start_ts_in;
-		obs_source_release(source);
-		obs_source_release(extra);
-		return true;
-	}
-
-	if ((source && obs_source_audio_pending(source)) || (extra && obs_source_audio_pending(extra))) {
-		obs_source_release(source);
-		obs_source_release(extra);
-		return false;
-	}
-
-	mix_source_audio_fallback(source, mixes, mixers, channels);
-	mix_source_audio_fallback(extra, mixes, mixers, channels);
-
-	*out_ts = ts;
-	obs_source_release(source);
-	obs_source_release(extra);
+	self->pop_captured_audio(mixes, mixers, channels);
 	return true;
 }
 
@@ -573,7 +465,9 @@ bool MsrSession::start()
 	closing_.store(false);
 	{
 		std::lock_guard<std::mutex> lock(audio_mutex_);
-		audio_queue_.clear();
+		fifo_main_.clear();
+		fifo_extra_.clear();
+		have_capture_audio_ = false;
 	}
 
 	if (!setup_video() || !setup_audio() || !setup_encoders_and_output()) {
@@ -652,6 +546,8 @@ void MsrSession::teardown()
 	}
 	{
 		std::lock_guard<std::mutex> lock(audio_mutex_);
-		audio_queue_.clear();
+		fifo_main_.clear();
+		fifo_extra_.clear();
+		have_capture_audio_ = false;
 	}
 }
