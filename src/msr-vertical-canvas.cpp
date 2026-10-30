@@ -110,9 +110,12 @@ bool MsrVerticalCanvas::ensure(uint32_t width, uint32_t height)
 		}
 	}
 
+	/* Require true portrait base AND output (1080x1920 typical). Main stays 1920x1080. */
 	struct obs_video_info cur = {};
-	if (obs_canvas_get_video_info(canvas_, &cur) && cur.base_width == width && cur.base_height == height &&
-	    obs_canvas_has_video(canvas_)) {
+	const bool dims_ok = obs_canvas_get_video_info(canvas_, &cur) && cur.base_width == width &&
+			     cur.base_height == height && cur.output_width == width && cur.output_height == height &&
+			     obs_canvas_has_video(canvas_);
+	if (dims_ok) {
 		if (!ensure_default_scene(canvas_))
 			return false;
 		width_ = width;
@@ -126,6 +129,9 @@ bool MsrVerticalCanvas::ensure(uint32_t width, uint32_t height)
 	ovi.base_height = height;
 	ovi.output_width = width;
 	ovi.output_height = height;
+
+	obs_log(LOG_INFO, "resetting vertical canvas '%s' to %ux%u (was base %ux%u out %ux%u)", kCanvasName, width,
+		height, cur.base_width, cur.base_height, cur.output_width, cur.output_height);
 
 	if (!obs_canvas_reset_video(canvas_, &ovi)) {
 		obs_log(LOG_ERROR, "obs_canvas_reset_video failed for '%s'", kCanvasName);
