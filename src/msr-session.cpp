@@ -11,6 +11,10 @@ the Free Software Foundation; either version 2 of the License, or
 #include "msr-session.hpp"
 #include "plugin-support.h"
 
+#include <obs-module.h>
+#include <callback/calldata.h>
+#include <callback/proc.h>
+
 #include <util/platform.h>
 #include <graphics/vec2.h>
 
@@ -492,6 +496,8 @@ bool MsrSession::start()
 		return false;
 	}
 
+	chapters_.clear();
+	start_ns_ = os_gettime_ns();
 	active_.store(true);
 	obs_log(LOG_INFO, "recording '%s' (%s) -> %s", source_name_.c_str(), orientation_token(orientation_),
 		output_path_.c_str());
@@ -507,9 +513,13 @@ void MsrSession::stop()
 		return;
 	}
 
+	if (!chapters_.empty())
+		write_chapters_sidecar();
+
 	if (file_output_ && obs_output_active(file_output_))
 		obs_output_stop(file_output_);
 
+	start_ns_ = 0;
 	teardown();
 }
 
@@ -601,8 +611,15 @@ void MsrSession::teardown()
 
 double MsrSession::media_time_sec() const
 {
-	/* Phase 2 fills this with encoder/output PTS. */
-	return 0.0;
+	if (!active_.load() || start_ns_ == 0)
+		return 0.0;
+	const uint64_t now = os_gettime_ns();
+	uint64_t pause_off = 0;
+	if (file_output_)
+		pause_off = obs_output_get_pause_offset(file_output_);
+	if (now <= start_ns_ + pause_off)
+		return 0.0;
+	return (double)(now - start_ns_ - pause_off) / 1000000000.0;
 }
 
 std::string MsrSession::chapters_path() const
@@ -616,14 +633,65 @@ std::string MsrSession::chapters_path() const
 	return p + ".chapters.json";
 }
 
-bool MsrSession::try_native_add_chapter(const std::string &)
+bool MsrSession::try_native_add_chapter(const std::string &name)
 {
-	return false;
+	if (!file_output_)
+		return false;
+	proc_handler_t *ph = obs_output_get_proc_handler(file_output_);
+	if (!ph)
+		return false;
+	calldata_t cd;
+	calldata_init(&cd);
+	calldata_set_string(&cd, "chapter_name", name.c_str());
+	const bool ok = proc_handler_call(ph, "add_chapter", &cd);
+	calldata_free(&cd);
+	return ok;
 }
 
-void MsrSession::write_chapters_sidecar() const {}
-
-bool MsrSession::add_chapter(const std::string &)
+void MsrSession::write_chapters_sidecar() const
 {
-	return false;
+	const std::string path = chapters_path();
+	if (path.empty())
+		return;
+
+	obs_data_t *root = obs_data_create();
+	obs_data_set_string(root, "output", output_path_.c_str());
+	obs_data_set_string(root, "source", source_name_.c_str());
+	obs_data_set_string(root, "orientation", orientation_token(orientation_));
+	obs_data_array_t *arr = obs_data_array_create();
+	for (const auto &ch : chapters_) {
+		obs_data_t *item = obs_data_create();
+		obs_data_set_string(item, "name", ch.name.c_str());
+		obs_data_set_double(item, "time_sec", ch.time_sec);
+		obs_data_array_push_back(arr, item);
+		obs_data_release(item);
+	}
+	obs_data_set_array(root, "chapters", arr);
+	obs_data_array_release(arr);
+
+	if (!obs_data_save_json_pretty_safe(root, path.c_str(), "tmp", "bak")) {
+		obs_log(LOG_WARNING, "failed to write chapters sidecar %s", path.c_str());
+	}
+	obs_data_release(root);
+}
+
+bool MsrSession::add_chapter(const std::string &name)
+{
+	if (!active_.load() || paused_.load())
+		return false;
+
+	std::string label = name;
+	if (label.empty())
+		label = "Chapter " + std::to_string(chapters_.size() + 1);
+
+	ChapterMark mark;
+	mark.name = label;
+	mark.time_sec = media_time_sec();
+	chapters_.push_back(mark);
+
+	const bool native = try_native_add_chapter(label);
+	write_chapters_sidecar();
+	obs_log(LOG_INFO, "chapter '%s' at %.3fs on '%s' (%s)%s", label.c_str(), mark.time_sec, source_name_.c_str(),
+		orientation_token(orientation_), native ? " [native]" : " [sidecar]");
+	return true;
 }

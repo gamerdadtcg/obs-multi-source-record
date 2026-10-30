@@ -41,6 +41,21 @@
       "Tooltip": "Pause or resume all Multi Source Record outputs",
       "UUID": "com.travvvman.obs-multi-source-record.pause",
       "PropertyInspectorPath": "propertyinspector/index.html"
+    },
+    {
+      "Icon": "imgs/action",
+      "Name": "Multi Source Record Chapter",
+      "States": [
+        {
+          "Image": "imgs/idle",
+          "Name": "Chapter",
+          "TitleAlignment": "middle",
+          "FontSize": "11"
+        }
+      ],
+      "Tooltip": "Add a chapter marker to all active Multi Source Record outputs",
+      "UUID": "com.travvvman.obs-multi-source-record.chapter",
+      "PropertyInspectorPath": "propertyinspector/index.html"
     }
   ],
   "Author": "Travvvman",
@@ -48,7 +63,7 @@
   "Description": "Control OBS Multi Source Record via obs-websocket vendor requests.",
   "Name": "OBS Multi Source Record",
   "Icon": "imgs/plugin",
-  "Version": "1.1.0",
+  "Version": "1.2.0",
   "SDKVersion": 2,
   "OS": [
     {

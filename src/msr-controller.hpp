@@ -40,6 +40,7 @@ public:
 	bool resume_all();
 	bool toggle_pause();
 	bool paused() const;
+	bool add_chapter(const std::string &name);
 
 	std::vector<std::string> active_outputs() const;
 
@@ -56,6 +57,7 @@ private:
 
 	static void hotkey_pressed(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed);
 	static void pause_hotkey_pressed(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed);
+	static void chapter_hotkey_pressed(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed);
 
 	static void ws_start(obs_data_t *request_data, obs_data_t *response_data, void *priv);
 	static void ws_stop(obs_data_t *request_data, obs_data_t *response_data, void *priv);
@@ -64,6 +66,7 @@ private:
 	static void ws_pause(obs_data_t *request_data, obs_data_t *response_data, void *priv);
 	static void ws_resume(obs_data_t *request_data, obs_data_t *response_data, void *priv);
 	static void ws_toggle_pause(obs_data_t *request_data, obs_data_t *response_data, void *priv);
+	static void ws_add_chapter(obs_data_t *request_data, obs_data_t *response_data, void *priv);
 	static void ws_get_settings(obs_data_t *request_data, obs_data_t *response_data, void *priv);
 	static void ws_configure(obs_data_t *request_data, obs_data_t *response_data, void *priv);
 
@@ -75,6 +78,7 @@ private:
 	std::vector<std::unique_ptr<MsrSession>> sessions_;
 	obs_hotkey_id hotkey_id_ = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id pause_hotkey_id_ = OBS_INVALID_HOTKEY_ID;
+	obs_hotkey_id chapter_hotkey_id_ = OBS_INVALID_HOTKEY_ID;
 	void *ws_vendor_ = nullptr;
 	StateCallback state_cb_;
 	static MsrController *instance_;

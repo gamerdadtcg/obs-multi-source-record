@@ -86,7 +86,9 @@ Tag a version like `1.0.0` on `main`. The Push workflow creates a **draft** GitH
 
 **Settings → Hotkeys → Multi Source Record: Pause/Resume** — pauses or resumes every active Multi Source Record output together (synced).
 
-The dock has a **Pause** / **Resume** button next to Start/Stop. Pause only applies while recording.
+**Settings → Hotkeys → Multi Source Record: Add Chapter** — drops a chapter marker on every active output at the same time.
+
+The dock has **Pause** / **Resume** and **Chapter** buttons next to Start/Stop. Pause only applies while recording. Chapter writes a `.chapters.json` sidecar next to each file and calls the output's native `add_chapter` when supported (Hybrid MP4 / OBS 30.2+).
 
 ### Vertical crop
 
@@ -108,8 +110,8 @@ Vertical mode center-crops the source to 9:16 and scales to the resolution in Ad
    ```
 
 4. Restart Stream Deck.
-5. Add **Multi Source Record Toggle** and/or **Multi Source Record Pause**. Set host/port/password to match **OBS → Tools → WebSocket Server Settings**.
-6. Toggle: idle = not recording; red = recording. Pause: recording vs paused states. Press to act.
+5. Add **Multi Source Record Toggle**, **Pause**, and/or **Chapter**. Set host/port/password to match **OBS → Tools → WebSocket Server Settings**.
+6. Toggle: idle = not recording; red = recording. Pause: recording vs paused. Chapter: marks all active outputs.
 
 ### Option B — any websocket tool / Multi Action
 
@@ -118,7 +120,9 @@ Call obs-websocket 5 **CallVendorRequest**:
 | Field | Value |
 | --- | --- |
 | vendorName | `obs-multi-source-record` |
-| requestType | `start` / `stop` / `toggle` / `status` / `pause` / `resume` / `toggle_pause` |
+| requestType | `start` / `stop` / `toggle` / `status` / `pause` / `resume` / `toggle_pause` / `add_chapter` |
+
+`add_chapter` accepts optional `requestData.name`. Without a name, chapters are auto-numbered (`Chapter 1`, …).
 
 Example `status` response data: `{ "success": true, "recording": true, "paused": false, "outputs": [...] }`.
 

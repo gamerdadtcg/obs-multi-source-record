@@ -174,9 +174,13 @@ void MsrDock::build_ui()
 	pause_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("PauseRecording")), this);
 	connect(pause_btn_, &QPushButton::clicked, this, &MsrDock::on_pause_resume);
 	pause_btn_->setEnabled(false);
+	chapter_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("AddChapter")), this);
+	connect(chapter_btn_, &QPushButton::clicked, this, &MsrDock::on_add_chapter);
+	chapter_btn_->setEnabled(false);
 	btn_row->addWidget(save_btn);
 	btn_row->addWidget(start_btn_, 1);
 	btn_row->addWidget(pause_btn_);
+	btn_row->addWidget(chapter_btn_);
 	root->addLayout(btn_row);
 
 	status_label_ = new QLabel(QString::fromUtf8(obs_module_text("StatusIdle")), this);
@@ -354,6 +358,15 @@ void MsrDock::on_pause_resume()
 		return;
 	c->toggle_pause();
 	update_recording_state(true);
+}
+
+void MsrDock::on_add_chapter()
+{
+	auto *c = MsrController::instance();
+	if (!c || !c->recording() || c->paused())
+		return;
+	if (c->add_chapter({}))
+		status_label_->setText(QString::fromUtf8(obs_module_text("StatusChapterAdded")));
 }
 
 void MsrDock::update_recording_state(bool recording)

@@ -14,6 +14,7 @@ const DEFAULTS = { host: "127.0.0.1", port: "4455", password: "" };
 
 const UUID_TOGGLE = "com.travvvman.obs-multi-source-record.toggle";
 const UUID_PAUSE = "com.travvvman.obs-multi-source-record.pause";
+const UUID_CHAPTER = "com.travvvman.obs-multi-source-record.chapter";
 
 function sendElgato(msg) {
   if (elgato && elgato.readyState === WebSocket.OPEN) elgato.send(JSON.stringify(msg));
@@ -142,6 +143,8 @@ async function onKey(context) {
     if (action === UUID_PAUSE) {
       const data = await vendor(settings, "toggle_pause");
       setState(context, data.paused ? 1 : 0);
+    } else if (action === UUID_CHAPTER) {
+      await vendor(settings, "add_chapter");
     } else {
       const data = await vendor(settings, "toggle");
       setState(context, data.recording ? 1 : 0);

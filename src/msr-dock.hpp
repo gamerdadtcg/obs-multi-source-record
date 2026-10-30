@@ -41,6 +41,7 @@ public slots:
 	void refresh_sources();
 	void on_start_stop();
 	void on_pause_resume();
+	void on_add_chapter();
 	void on_browse_folder();
 	void on_save();
 	void update_recording_state(bool recording);
@@ -65,6 +66,7 @@ private:
 	QSpinBox *vert_h_ = nullptr;
 	QPushButton *start_btn_ = nullptr;
 	QPushButton *pause_btn_ = nullptr;
+	QPushButton *chapter_btn_ = nullptr;
 	QLabel *status_label_ = nullptr;
 	QGroupBox *advanced_box_ = nullptr;
 };

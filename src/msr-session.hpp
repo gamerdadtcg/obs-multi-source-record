@@ -206,6 +206,7 @@ private:
 	std::atomic<bool> active_{false};
 	std::atomic<bool> closing_{false};
 	std::atomic<bool> paused_{false};
+	uint64_t start_ns_ = 0;
 
 	struct ChapterMark {
 		std::string name;
