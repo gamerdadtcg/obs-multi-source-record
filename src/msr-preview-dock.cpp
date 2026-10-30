@@ -30,8 +30,8 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QDialogButtonBox>
 #include <QLineEdit>
 #include <QSizePolicy>
-#include <algorithm>
 
+#include <obs-module.h>
 #include <obs-frontend-api.h>
 
 #ifdef _WIN32
@@ -272,8 +272,12 @@ void MsrPreviewDisplay::draw_preview(void *param, uint32_t cx, uint32_t cy)
 	int x, y;
 	float scale;
 	get_scale_and_center((int)sourceCX, (int)sourceCY, (int)cx, (int)cy, x, y, scale);
-	const int newCX = std::max(1, (int)(scale * float(sourceCX)));
-	const int newCY = std::max(1, (int)(scale * float(sourceCY)));
+	int newCX = (int)(scale * float(sourceCX));
+	int newCY = (int)(scale * float(sourceCY));
+	if (newCX < 1)
+		newCX = 1;
+	if (newCY < 1)
+		newCY = 1;
 
 	gs_viewport_push();
 	gs_projection_push();
