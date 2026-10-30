@@ -154,11 +154,7 @@ bool MsrStreamSession::setup_encoders_and_output()
 {
 	const int vbr = dest_.video_bitrate_kbps > 0 ? dest_.video_bitrate_kbps : settings_.video_bitrate_kbps;
 	const int abr = dest_.audio_bitrate_kbps > 0 ? dest_.audio_bitrate_kbps : settings_.audio_bitrate_kbps;
-	/* Always use software x264 for parallel stream outputs. NVENC texture encoders
-	 * fail obs_output_initialize_encoders when a second session shares the main video
-	 * (obs_output_start returns false before any RTMP connect). Recording still uses
-	 * the user's preferred hardware encoder. */
-	const char *venc_id = "obs_x264";
+	const char *venc_id = resolve_video_encoder_id();
 
 	obs_data_t *vsettings = obs_data_create();
 	obs_data_set_int(vsettings, "bitrate", vbr);
@@ -171,6 +167,11 @@ bool MsrStreamSession::setup_encoders_and_output()
 	const std::string tag = sanitize_name(dest_.name) + "-" + orientation_token(dest_.orientation);
 	std::string enc_name = "msr-stream-venc-" + tag;
 	video_encoder_ = obs_video_encoder_create(venc_id, enc_name.c_str(), vsettings, nullptr);
+	if (!video_encoder_ && strcmp(venc_id, "obs_x264") != 0) {
+		obs_log(LOG_WARNING, "stream encoder %s unavailable; falling back to x264", venc_id);
+		venc_id = "obs_x264";
+		video_encoder_ = obs_video_encoder_create(venc_id, enc_name.c_str(), vsettings, nullptr);
+	}
 	obs_data_release(vsettings);
 	if (!video_encoder_) {
 		obs_log(LOG_ERROR, "failed to create stream video encoder %s for '%s'", venc_id, dest_.name.c_str());
@@ -191,19 +192,29 @@ bool MsrStreamSession::setup_encoders_and_output()
 	}
 	obs_encoder_set_audio(audio_encoder_, audio_output_);
 
-	obs_data_t *osettings = obs_data_create();
-	obs_data_set_string(osettings, "server", dest_.server_url.c_str());
-	obs_data_set_string(osettings, "key", dest_.stream_key.c_str());
-	obs_data_set_bool(osettings, "use_auth", false);
+	/* rtmp_output has OBS_OUTPUT_SERVICE — server/key must live on an attached
+	 * rtmp_custom service. Settings alone make obs_output_start fail immediately
+	 * with no RTMP connect attempt. */
+	obs_data_t *ssettings = obs_data_create();
+	obs_data_set_string(ssettings, "server", dest_.server_url.c_str());
+	obs_data_set_string(ssettings, "key", dest_.stream_key.c_str());
+	obs_data_set_bool(ssettings, "use_auth", false);
+	std::string svc_name = "msr-stream-svc-" + tag;
+	service_ = obs_service_create("rtmp_custom", svc_name.c_str(), ssettings, nullptr);
+	obs_data_release(ssettings);
+	if (!service_) {
+		obs_log(LOG_ERROR, "failed to create rtmp_custom service for '%s'", dest_.name.c_str());
+		return false;
+	}
 
 	std::string out_name = "msr-stream-out-" + tag;
-	rtmp_output_ = obs_output_create("rtmp_output", out_name.c_str(), osettings, nullptr);
-	obs_data_release(osettings);
+	rtmp_output_ = obs_output_create("rtmp_output", out_name.c_str(), nullptr, nullptr);
 	if (!rtmp_output_) {
 		obs_log(LOG_ERROR, "failed to create rtmp_output for '%s'", dest_.name.c_str());
 		return false;
 	}
 
+	obs_output_set_service(rtmp_output_, service_);
 	obs_output_set_video_encoder(rtmp_output_, video_encoder_);
 	obs_output_set_audio_encoder(rtmp_output_, audio_encoder_, 0);
 	return true;
@@ -254,8 +265,13 @@ void MsrStreamSession::teardown()
 	if (rtmp_output_) {
 		if (obs_output_active(rtmp_output_))
 			obs_output_force_stop(rtmp_output_);
+		obs_output_set_service(rtmp_output_, nullptr);
 		obs_output_release(rtmp_output_);
 		rtmp_output_ = nullptr;
+	}
+	if (service_) {
+		obs_service_release(service_);
+		service_ = nullptr;
 	}
 	if (audio_encoder_) {
 		obs_encoder_release(audio_encoder_);

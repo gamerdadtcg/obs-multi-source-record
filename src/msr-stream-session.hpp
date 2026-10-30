@@ -49,6 +49,7 @@ private:
 	obs_encoder_t *video_encoder_ = nullptr;
 	obs_encoder_t *audio_encoder_ = nullptr;
 	obs_output_t *rtmp_output_ = nullptr;
+	obs_service_t *service_ = nullptr;
 	uint32_t width_ = 0;
 	uint32_t height_ = 0;
 	std::atomic<bool> active_{false};
