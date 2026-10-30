@@ -154,15 +154,11 @@ bool MsrStreamSession::setup_encoders_and_output()
 {
 	const int vbr = dest_.video_bitrate_kbps > 0 ? dest_.video_bitrate_kbps : settings_.video_bitrate_kbps;
 	const int abr = dest_.audio_bitrate_kbps > 0 ? dest_.audio_bitrate_kbps : settings_.audio_bitrate_kbps;
-	/* Prefer software x264 for parallel stream outputs — NVENC texture encoders often
-	 * fail obs_output_initialize_encoders when a second session shares the main video. */
+	/* Always use software x264 for parallel stream outputs. NVENC texture encoders
+	 * fail obs_output_initialize_encoders when a second session shares the main video
+	 * (obs_output_start returns false before any RTMP connect). Recording still uses
+	 * the user's preferred hardware encoder. */
 	const char *venc_id = "obs_x264";
-	if (settings_.video_encoder == "nvenc" || settings_.video_encoder == "amf" ||
-	    settings_.video_encoder == "qsv") {
-		const char *pref = resolve_video_encoder_id();
-		if (pref)
-			venc_id = pref;
-	}
 
 	obs_data_t *vsettings = obs_data_create();
 	obs_data_set_int(vsettings, "bitrate", vbr);
@@ -175,11 +171,6 @@ bool MsrStreamSession::setup_encoders_and_output()
 	const std::string tag = sanitize_name(dest_.name) + "-" + orientation_token(dest_.orientation);
 	std::string enc_name = "msr-stream-venc-" + tag;
 	video_encoder_ = obs_video_encoder_create(venc_id, enc_name.c_str(), vsettings, nullptr);
-	if (!video_encoder_ && strcmp(venc_id, "obs_x264") != 0) {
-		obs_log(LOG_WARNING, "stream encoder %s unavailable; falling back to x264", venc_id);
-		venc_id = "obs_x264";
-		video_encoder_ = obs_video_encoder_create(venc_id, enc_name.c_str(), vsettings, nullptr);
-	}
 	obs_data_release(vsettings);
 	if (!video_encoder_) {
 		obs_log(LOG_ERROR, "failed to create stream video encoder %s for '%s'", venc_id, dest_.name.c_str());
