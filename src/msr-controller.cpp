@@ -144,7 +144,8 @@ void MsrController::load_settings()
 			MsrSourceConfig cfg;
 			cfg.source_name = obs_data_get_string(item, "source_name");
 			cfg.enabled = obs_data_get_bool(item, "enabled");
-			cfg.orientation = static_cast<MsrOrientation>(obs_data_get_int(item, "orientation"));
+			cfg.orientation = parse_orientation_token(obs_data_get_string(item, "orientation"),
+								  (int)obs_data_get_int(item, "orientation"));
 			cfg.extra_audio_source = obs_data_get_string(item, "extra_audio_source");
 			if (cfg.extra_audio_source == cfg.source_name)
 				cfg.extra_audio_source.clear();
@@ -163,7 +164,8 @@ void MsrController::load_settings()
 			MsrStreamDestination d;
 			d.name = obs_data_get_string(item, "name");
 			d.enabled = obs_data_get_bool(item, "enabled");
-			d.orientation = static_cast<MsrOrientation>(obs_data_get_int(item, "orientation"));
+			d.orientation = parse_orientation_token(obs_data_get_string(item, "orientation"),
+								(int)obs_data_get_int(item, "orientation"));
 			if (d.orientation == MsrOrientation::Both)
 				d.orientation = MsrOrientation::Horizontal;
 			d.server_url = obs_data_get_string(item, "server_url");
@@ -217,6 +219,7 @@ void MsrController::save_settings()
 		obs_data_set_string(item, "name", d.name.c_str());
 		obs_data_set_bool(item, "enabled", d.enabled);
 		obs_data_set_int(item, "orientation", static_cast<int>(d.orientation));
+		obs_data_set_string(item, "orientation_name", orientation_token(d.orientation));
 		obs_data_set_string(item, "server_url", d.server_url.c_str());
 		obs_data_set_string(item, "stream_key", d.stream_key.c_str());
 		obs_data_set_int(item, "video_bitrate_kbps", d.video_bitrate_kbps);
@@ -780,6 +783,7 @@ void MsrController::ws_get_settings(obs_data_t *request_data, obs_data_t *respon
 		obs_data_set_string(item, "name", d.name.c_str());
 		obs_data_set_bool(item, "enabled", d.enabled);
 		obs_data_set_int(item, "orientation", static_cast<int>(d.orientation));
+		obs_data_set_string(item, "orientation_name", orientation_token(d.orientation));
 		obs_data_set_string(item, "server_url", d.server_url.c_str());
 		obs_data_set_bool(item, "stream_key_set", !d.stream_key.empty());
 		obs_data_set_string(item, "stream_key_masked", mask_stream_key(d.stream_key).c_str());
@@ -836,7 +840,8 @@ void MsrController::ws_configure(obs_data_t *request_data, obs_data_t *response_
 			MsrSourceConfig cfg;
 			cfg.source_name = obs_data_get_string(item, "source_name");
 			cfg.enabled = obs_data_get_bool(item, "enabled");
-			cfg.orientation = static_cast<MsrOrientation>(obs_data_get_int(item, "orientation"));
+			cfg.orientation = parse_orientation_token(obs_data_get_string(item, "orientation"),
+								  (int)obs_data_get_int(item, "orientation"));
 			cfg.extra_audio_source = obs_data_get_string(item, "extra_audio_source");
 			if (cfg.extra_audio_source == cfg.source_name)
 				cfg.extra_audio_source.clear();
@@ -857,7 +862,8 @@ void MsrController::ws_configure(obs_data_t *request_data, obs_data_t *response_
 			MsrStreamDestination d;
 			d.name = obs_data_get_string(item, "name");
 			d.enabled = obs_data_get_bool(item, "enabled");
-			d.orientation = static_cast<MsrOrientation>(obs_data_get_int(item, "orientation"));
+			d.orientation = parse_orientation_token(obs_data_get_string(item, "orientation"),
+								(int)obs_data_get_int(item, "orientation"));
 			if (d.orientation == MsrOrientation::Both)
 				d.orientation = MsrOrientation::Horizontal;
 			d.server_url = obs_data_get_string(item, "server_url");

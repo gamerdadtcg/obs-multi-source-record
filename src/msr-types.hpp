@@ -13,6 +13,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <cstring>
 
 enum class MsrOrientation {
 	Horizontal = 0,
@@ -64,6 +65,23 @@ inline const char *orientation_token(MsrOrientation o)
 		return "both";
 	}
 	return "horizontal";
+}
+
+inline MsrOrientation parse_orientation_token(const char *s, int as_int = 0)
+{
+	if (s && *s) {
+		if (strcmp(s, "vertical") == 0 || strcmp(s, "Vertical") == 0)
+			return MsrOrientation::Vertical;
+		if (strcmp(s, "both") == 0 || strcmp(s, "Both") == 0)
+			return MsrOrientation::Both;
+		if (strcmp(s, "horizontal") == 0 || strcmp(s, "Horizontal") == 0)
+			return MsrOrientation::Horizontal;
+	}
+	if (as_int == (int)MsrOrientation::Vertical)
+		return MsrOrientation::Vertical;
+	if (as_int == (int)MsrOrientation::Both)
+		return MsrOrientation::Both;
+	return MsrOrientation::Horizontal;
 }
 
 /** Mask a stream key for UI / API responses. Never log the raw key. */
