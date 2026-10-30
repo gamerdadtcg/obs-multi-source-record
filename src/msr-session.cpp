@@ -128,7 +128,7 @@ void MsrSession::audio_capture_callback(void *param, obs_source_t *source, const
 
 void MsrSession::push_captured_audio(obs_source_t *source, const struct audio_data *audio_data, bool muted)
 {
-	if (muted || !audio_data->frames)
+	if (muted || !audio_data->frames || paused_.load())
 		return;
 
 	std::lock_guard<std::mutex> lock(audio_mutex_);
@@ -473,6 +473,7 @@ bool MsrSession::start()
 		return true;
 
 	closing_.store(false);
+	paused_.store(false);
 	{
 		std::lock_guard<std::mutex> lock(audio_mutex_);
 		fifo_main_.clear();
@@ -500,6 +501,7 @@ bool MsrSession::start()
 void MsrSession::stop()
 {
 	closing_.store(true);
+	paused_.store(false);
 	if (!active_.exchange(false) && !file_output_) {
 		teardown();
 		return;
@@ -509,6 +511,41 @@ void MsrSession::stop()
 		obs_output_stop(file_output_);
 
 	teardown();
+}
+
+bool MsrSession::pause()
+{
+	if (!active_.load() || !file_output_)
+		return false;
+	if (paused_.load())
+		return true;
+	if (!obs_output_pause(file_output_, true)) {
+		obs_log(LOG_WARNING, "obs_output_pause(true) failed for '%s'", source_name_.c_str());
+		return false;
+	}
+	paused_.store(true);
+	{
+		std::lock_guard<std::mutex> lock(audio_mutex_);
+		fifo_main_.clear();
+		fifo_extra_.clear();
+	}
+	obs_log(LOG_INFO, "paused '%s' (%s)", source_name_.c_str(), orientation_token(orientation_));
+	return true;
+}
+
+bool MsrSession::resume()
+{
+	if (!active_.load() || !file_output_)
+		return false;
+	if (!paused_.load())
+		return true;
+	if (!obs_output_pause(file_output_, false)) {
+		obs_log(LOG_WARNING, "obs_output_pause(false) failed for '%s'", source_name_.c_str());
+		return false;
+	}
+	paused_.store(false);
+	obs_log(LOG_INFO, "resumed '%s' (%s)", source_name_.c_str(), orientation_token(orientation_));
+	return true;
 }
 
 void MsrSession::teardown()
@@ -560,4 +597,33 @@ void MsrSession::teardown()
 		fifo_extra_.clear();
 		have_capture_audio_ = false;
 	}
+}
+
+double MsrSession::media_time_sec() const
+{
+	/* Phase 2 fills this with encoder/output PTS. */
+	return 0.0;
+}
+
+std::string MsrSession::chapters_path() const
+{
+	if (output_path_.empty())
+		return {};
+	std::string p = output_path_;
+	auto dot = p.find_last_of('.');
+	if (dot != std::string::npos)
+		p = p.substr(0, dot);
+	return p + ".chapters.json";
+}
+
+bool MsrSession::try_native_add_chapter(const std::string &)
+{
+	return false;
+}
+
+void MsrSession::write_chapters_sidecar() const {}
+
+bool MsrSession::add_chapter(const std::string &)
+{
+	return false;
 }

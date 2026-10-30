@@ -36,6 +36,10 @@ public:
 	void stop_all();
 	bool toggle();
 	bool recording() const;
+	bool pause_all();
+	bool resume_all();
+	bool toggle_pause();
+	bool paused() const;
 
 	std::vector<std::string> active_outputs() const;
 
@@ -51,11 +55,15 @@ private:
 	~MsrController();
 
 	static void hotkey_pressed(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed);
+	static void pause_hotkey_pressed(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed);
 
 	static void ws_start(obs_data_t *request_data, obs_data_t *response_data, void *priv);
 	static void ws_stop(obs_data_t *request_data, obs_data_t *response_data, void *priv);
 	static void ws_toggle(obs_data_t *request_data, obs_data_t *response_data, void *priv);
 	static void ws_status(obs_data_t *request_data, obs_data_t *response_data, void *priv);
+	static void ws_pause(obs_data_t *request_data, obs_data_t *response_data, void *priv);
+	static void ws_resume(obs_data_t *request_data, obs_data_t *response_data, void *priv);
+	static void ws_toggle_pause(obs_data_t *request_data, obs_data_t *response_data, void *priv);
 	static void ws_get_settings(obs_data_t *request_data, obs_data_t *response_data, void *priv);
 	static void ws_configure(obs_data_t *request_data, obs_data_t *response_data, void *priv);
 
@@ -66,6 +74,7 @@ private:
 	MsrSettings settings_;
 	std::vector<std::unique_ptr<MsrSession>> sessions_;
 	obs_hotkey_id hotkey_id_ = OBS_INVALID_HOTKEY_ID;
+	obs_hotkey_id pause_hotkey_id_ = OBS_INVALID_HOTKEY_ID;
 	void *ws_vendor_ = nullptr;
 	StateCallback state_cb_;
 	static MsrController *instance_;

@@ -324,6 +324,70 @@ bool MsrController::toggle()
 	return start_all();
 }
 
+bool MsrController::paused() const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	bool any = false;
+	for (const auto &s : sessions_) {
+		if (s && s->active()) {
+			if (!s->paused())
+				return false;
+			any = true;
+		}
+	}
+	return any;
+}
+
+bool MsrController::pause_all()
+{
+	std::vector<MsrSession *> targets;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		for (const auto &s : sessions_) {
+			if (s && s->active())
+				targets.push_back(s.get());
+		}
+	}
+	bool ok = false;
+	for (auto *s : targets) {
+		if (s->pause())
+			ok = true;
+	}
+	notify_state();
+	return ok;
+}
+
+bool MsrController::resume_all()
+{
+	std::vector<MsrSession *> targets;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		for (const auto &s : sessions_) {
+			if (s && s->active())
+				targets.push_back(s.get());
+		}
+	}
+	bool ok = false;
+	for (auto *s : targets) {
+		if (s->resume())
+			ok = true;
+	}
+	notify_state();
+	return ok;
+}
+
+bool MsrController::toggle_pause()
+{
+	if (!recording())
+		return false;
+	if (paused()) {
+		resume_all();
+		return false;
+	}
+	pause_all();
+	return true;
+}
+
 void MsrController::hotkey_pressed(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
 {
 	UNUSED_PARAMETER(id);
@@ -335,12 +399,27 @@ void MsrController::hotkey_pressed(void *data, obs_hotkey_id id, obs_hotkey_t *h
 		self->toggle();
 }
 
+void MsrController::pause_hotkey_pressed(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
+{
+	UNUSED_PARAMETER(id);
+	UNUSED_PARAMETER(hotkey);
+	if (!pressed)
+		return;
+	auto *self = static_cast<MsrController *>(data);
+	if (self)
+		self->toggle_pause();
+}
+
 void MsrController::register_hotkey()
 {
-	if (hotkey_id_ != OBS_INVALID_HOTKEY_ID)
-		return;
-	hotkey_id_ =
-		obs_hotkey_register_frontend("msr.toggle", "Multi Source Record: Start/Stop", hotkey_pressed, this);
+	if (hotkey_id_ == OBS_INVALID_HOTKEY_ID) {
+		hotkey_id_ = obs_hotkey_register_frontend("msr.toggle", "Multi Source Record: Start/Stop",
+							  hotkey_pressed, this);
+	}
+	if (pause_hotkey_id_ == OBS_INVALID_HOTKEY_ID) {
+		pause_hotkey_id_ = obs_hotkey_register_frontend(
+			"msr.pause", "Multi Source Record: Pause/Resume", pause_hotkey_pressed, this);
+	}
 }
 
 void MsrController::unregister_hotkey()
@@ -348,6 +427,10 @@ void MsrController::unregister_hotkey()
 	if (hotkey_id_ != OBS_INVALID_HOTKEY_ID) {
 		obs_hotkey_unregister(hotkey_id_);
 		hotkey_id_ = OBS_INVALID_HOTKEY_ID;
+	}
+	if (pause_hotkey_id_ != OBS_INVALID_HOTKEY_ID) {
+		obs_hotkey_unregister(pause_hotkey_id_);
+		pause_hotkey_id_ = OBS_INVALID_HOTKEY_ID;
 	}
 }
 
@@ -358,6 +441,7 @@ void MsrController::ws_start(obs_data_t *request_data, obs_data_t *response_data
 	bool ok = self && self->start_all();
 	obs_data_set_bool(response_data, "success", ok);
 	obs_data_set_bool(response_data, "recording", self && self->recording());
+	obs_data_set_bool(response_data, "paused", self && self->paused());
 }
 
 void MsrController::ws_stop(obs_data_t *request_data, obs_data_t *response_data, void *priv)
@@ -368,6 +452,7 @@ void MsrController::ws_stop(obs_data_t *request_data, obs_data_t *response_data,
 		self->stop_all();
 	obs_data_set_bool(response_data, "success", true);
 	obs_data_set_bool(response_data, "recording", false);
+	obs_data_set_bool(response_data, "paused", false);
 }
 
 void MsrController::ws_toggle(obs_data_t *request_data, obs_data_t *response_data, void *priv)
@@ -377,6 +462,37 @@ void MsrController::ws_toggle(obs_data_t *request_data, obs_data_t *response_dat
 	bool rec = self && self->toggle();
 	obs_data_set_bool(response_data, "success", true);
 	obs_data_set_bool(response_data, "recording", rec);
+	obs_data_set_bool(response_data, "paused", self && self->paused());
+}
+
+void MsrController::ws_pause(obs_data_t *request_data, obs_data_t *response_data, void *priv)
+{
+	UNUSED_PARAMETER(request_data);
+	auto *self = static_cast<MsrController *>(priv);
+	bool ok = self && self->pause_all();
+	obs_data_set_bool(response_data, "success", ok);
+	obs_data_set_bool(response_data, "recording", self && self->recording());
+	obs_data_set_bool(response_data, "paused", self && self->paused());
+}
+
+void MsrController::ws_resume(obs_data_t *request_data, obs_data_t *response_data, void *priv)
+{
+	UNUSED_PARAMETER(request_data);
+	auto *self = static_cast<MsrController *>(priv);
+	bool ok = self && self->resume_all();
+	obs_data_set_bool(response_data, "success", ok);
+	obs_data_set_bool(response_data, "recording", self && self->recording());
+	obs_data_set_bool(response_data, "paused", self && self->paused());
+}
+
+void MsrController::ws_toggle_pause(obs_data_t *request_data, obs_data_t *response_data, void *priv)
+{
+	UNUSED_PARAMETER(request_data);
+	auto *self = static_cast<MsrController *>(priv);
+	bool now_paused = self && self->toggle_pause();
+	obs_data_set_bool(response_data, "success", self && self->recording());
+	obs_data_set_bool(response_data, "recording", self && self->recording());
+	obs_data_set_bool(response_data, "paused", now_paused || (self && self->paused()));
 }
 
 void MsrController::ws_status(obs_data_t *request_data, obs_data_t *response_data, void *priv)
@@ -384,8 +500,10 @@ void MsrController::ws_status(obs_data_t *request_data, obs_data_t *response_dat
 	UNUSED_PARAMETER(request_data);
 	auto *self = static_cast<MsrController *>(priv);
 	bool rec = self && self->recording();
+	bool paused = self && self->paused();
 	obs_data_set_bool(response_data, "success", true);
 	obs_data_set_bool(response_data, "recording", rec);
+	obs_data_set_bool(response_data, "paused", paused);
 	obs_data_array_t *arr = obs_data_array_create();
 	if (self) {
 		for (const auto &path : self->active_outputs()) {
@@ -501,6 +619,9 @@ void MsrController::register_websocket()
 	obs_websocket_vendor_register_request(ws_vendor_, "stop", ws_stop, this);
 	obs_websocket_vendor_register_request(ws_vendor_, "toggle", ws_toggle, this);
 	obs_websocket_vendor_register_request(ws_vendor_, "status", ws_status, this);
+	obs_websocket_vendor_register_request(ws_vendor_, "pause", ws_pause, this);
+	obs_websocket_vendor_register_request(ws_vendor_, "resume", ws_resume, this);
+	obs_websocket_vendor_register_request(ws_vendor_, "toggle_pause", ws_toggle_pause, this);
 	obs_websocket_vendor_register_request(ws_vendor_, "get_settings", ws_get_settings, this);
 	obs_websocket_vendor_register_request(ws_vendor_, "configure", ws_configure, this);
 	obs_log(LOG_INFO, "registered obs-websocket vendor obs-multi-source-record");

@@ -31,10 +31,15 @@ public:
 	bool start();
 	void stop();
 	bool active() const { return active_.load(); }
+	bool pause();
+	bool resume();
+	bool paused() const { return paused_.load(); }
+	bool add_chapter(const std::string &name);
 
 	const std::string &source_name() const { return source_name_; }
 	MsrOrientation orientation() const { return orientation_; }
 	const std::string &output_path() const { return output_path_; }
+	std::string chapters_path() const;
 
 private:
 	struct SampleFifo {
@@ -167,6 +172,9 @@ private:
 
 	void push_captured_audio(obs_source_t *source, const struct audio_data *audio_data, bool muted);
 	bool pop_captured_audio(struct audio_output_data *mixes, uint32_t mixers, size_t channels);
+	double media_time_sec() const;
+	void write_chapters_sidecar() const;
+	bool try_native_add_chapter(const std::string &name);
 
 	std::string source_name_;
 	MsrOrientation orientation_;
@@ -192,6 +200,13 @@ private:
 	uint32_t height_ = 0;
 	std::atomic<bool> active_{false};
 	std::atomic<bool> closing_{false};
+	std::atomic<bool> paused_{false};
+
+	struct ChapterMark {
+		std::string name;
+		double time_sec = 0.0;
+	};
+	std::vector<ChapterMark> chapters_;
 
 	std::mutex audio_mutex_;
 	SampleFifo fifo_main_;

@@ -9,7 +9,11 @@ const crypto = require("crypto");
 
 let elgato = null;
 const settingsByContext = {};
+const actionByContext = {};
 const DEFAULTS = { host: "127.0.0.1", port: "4455", password: "" };
+
+const UUID_TOGGLE = "com.travvvman.obs-multi-source-record.toggle";
+const UUID_PAUSE = "com.travvvman.obs-multi-source-record.pause";
 
 function sendElgato(msg) {
   if (elgato && elgato.readyState === WebSocket.OPEN) elgato.send(JSON.stringify(msg));
@@ -82,7 +86,6 @@ function connectObs(settings) {
         return;
       }
       if (msg.op === 0) {
-        // Hello
         const auth = msg.d.authentication;
         const identify = { op: 1, d: { rpcVersion: 1 } };
         if (auth && cfg.password) {
@@ -121,16 +124,28 @@ async function vendor(settings, requestType) {
 async function refresh(context) {
   try {
     const data = await vendor(settingsByContext[context], "status");
-    setState(context, data.recording ? 1 : 0);
+    const action = actionByContext[context];
+    if (action === UUID_PAUSE) {
+      setState(context, data.paused ? 1 : 0);
+    } else {
+      setState(context, data.recording ? 1 : 0);
+    }
   } catch (_) {
     showAlert(context);
   }
 }
 
-async function toggle(context) {
+async function onKey(context) {
   try {
-    const data = await vendor(settingsByContext[context], "toggle");
-    setState(context, data.recording ? 1 : 0);
+    const action = actionByContext[context];
+    const settings = settingsByContext[context];
+    if (action === UUID_PAUSE) {
+      const data = await vendor(settings, "toggle_pause");
+      setState(context, data.paused ? 1 : 0);
+    } else {
+      const data = await vendor(settings, "toggle");
+      setState(context, data.recording ? 1 : 0);
+    }
     showOk(context);
   } catch (_) {
     showAlert(context);
@@ -154,14 +169,16 @@ function main() {
     } catch (_) {
       return;
     }
-    const { event, context, payload } = msg;
+    const { event, context, payload, action } = msg;
     if (event === "willAppear") {
       settingsByContext[context] = (payload && payload.settings) || {};
+      actionByContext[context] = action || UUID_TOGGLE;
       refresh(context);
     } else if (event === "didReceiveSettings") {
       settingsByContext[context] = (payload && payload.settings) || {};
     } else if (event === "keyDown") {
-      toggle(context);
+      if (action) actionByContext[context] = action;
+      onKey(context);
     }
   });
 }

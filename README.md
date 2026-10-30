@@ -84,6 +84,10 @@ Tag a version like `1.0.0` on `main`. The Push workflow creates a **draft** GitH
 
 **Settings → Hotkeys → Multi Source Record: Start/Stop**
 
+**Settings → Hotkeys → Multi Source Record: Pause/Resume** — pauses or resumes every active Multi Source Record output together (synced).
+
+The dock has a **Pause** / **Resume** button next to Start/Stop. Pause only applies while recording.
+
 ### Vertical crop
 
 Vertical mode center-crops the source to 9:16 and scales to the resolution in Advanced (default **1080×1920**).
@@ -104,8 +108,8 @@ Vertical mode center-crops the source to 9:16 and scales to the resolution in Ad
    ```
 
 4. Restart Stream Deck.
-5. Add **Multi Source Record Toggle**. Set host/port/password to match **OBS → Tools → WebSocket Server Settings**.
-6. Idle image = not recording; red = recording. Press to toggle.
+5. Add **Multi Source Record Toggle** and/or **Multi Source Record Pause**. Set host/port/password to match **OBS → Tools → WebSocket Server Settings**.
+6. Toggle: idle = not recording; red = recording. Pause: recording vs paused states. Press to act.
 
 ### Option B — any websocket tool / Multi Action
 
@@ -114,9 +118,9 @@ Call obs-websocket 5 **CallVendorRequest**:
 | Field | Value |
 | --- | --- |
 | vendorName | `obs-multi-source-record` |
-| requestType | `start` / `stop` / `toggle` / `status` |
+| requestType | `start` / `stop` / `toggle` / `status` / `pause` / `resume` / `toggle_pause` |
 
-Example `toggle` response data: `{ "success": true, "recording": true }`.
+Example `status` response data: `{ "success": true, "recording": true, "paused": false, "outputs": [...] }`.
 
 ## Building from source
 

@@ -20,18 +20,45 @@
       "Tooltip": "Start or stop Multi Source Record in OBS",
       "UUID": "com.travvvman.obs-multi-source-record.toggle",
       "PropertyInspectorPath": "propertyinspector/index.html"
+    },
+    {
+      "Icon": "imgs/pause-action",
+      "Name": "Multi Source Record Pause",
+      "States": [
+        {
+          "Image": "imgs/recording",
+          "Name": "Recording",
+          "TitleAlignment": "middle",
+          "FontSize": "11"
+        },
+        {
+          "Image": "imgs/paused",
+          "Name": "Paused",
+          "TitleAlignment": "middle",
+          "FontSize": "11"
+        }
+      ],
+      "Tooltip": "Pause or resume all Multi Source Record outputs",
+      "UUID": "com.travvvman.obs-multi-source-record.pause",
+      "PropertyInspectorPath": "propertyinspector/index.html"
     }
   ],
   "Author": "Travvvman",
   "CodePath": "plugin.js",
-  "Description": "Toggle OBS Multi Source Record via obs-websocket vendor requests.",
+  "Description": "Control OBS Multi Source Record via obs-websocket vendor requests.",
   "Name": "OBS Multi Source Record",
   "Icon": "imgs/plugin",
-  "Version": "1.0.0",
+  "Version": "1.1.0",
   "SDKVersion": 2,
   "OS": [
-    { "Platform": "mac", "MinimumVersion": "10.15" },
-    { "Platform": "windows", "MinimumVersion": "10" }
+    {
+      "Platform": "mac",
+      "MinimumVersion": "10.15"
+    },
+    {
+      "Platform": "windows",
+      "MinimumVersion": "10"
+    }
   ],
   "Software": {
     "MinimumVersion": "6.4"

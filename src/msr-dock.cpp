@@ -171,8 +171,12 @@ void MsrDock::build_ui()
 	connect(save_btn, &QPushButton::clicked, this, &MsrDock::on_save);
 	start_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("StartRecording")), this);
 	connect(start_btn_, &QPushButton::clicked, this, &MsrDock::on_start_stop);
+	pause_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("PauseRecording")), this);
+	connect(pause_btn_, &QPushButton::clicked, this, &MsrDock::on_pause_resume);
+	pause_btn_->setEnabled(false);
 	btn_row->addWidget(save_btn);
 	btn_row->addWidget(start_btn_, 1);
+	btn_row->addWidget(pause_btn_);
 	root->addLayout(btn_row);
 
 	status_label_ = new QLabel(QString::fromUtf8(obs_module_text("StatusIdle")), this);
@@ -343,11 +347,28 @@ void MsrDock::on_start_stop()
 		c->start_all();
 }
 
+void MsrDock::on_pause_resume()
+{
+	auto *c = MsrController::instance();
+	if (!c || !c->recording())
+		return;
+	c->toggle_pause();
+	update_recording_state(true);
+}
+
 void MsrDock::update_recording_state(bool recording)
 {
+	auto *c = MsrController::instance();
+	const bool paused = recording && c && c->paused();
+	if (pause_btn_) {
+		pause_btn_->setEnabled(recording);
+		pause_btn_->setText(QString::fromUtf8(
+			obs_module_text(paused ? "ResumeRecording" : "PauseRecording")));
+	}
 	if (recording) {
 		start_btn_->setText(QString::fromUtf8(obs_module_text("StopRecording")));
-		status_label_->setText(QString::fromUtf8(obs_module_text("StatusRecording")));
+		status_label_->setText(QString::fromUtf8(
+			obs_module_text(paused ? "StatusPaused" : "StatusRecording")));
 	} else {
 		start_btn_->setText(QString::fromUtf8(obs_module_text("StartRecording")));
 		status_label_->setText(QString::fromUtf8(obs_module_text("StatusIdle")));
