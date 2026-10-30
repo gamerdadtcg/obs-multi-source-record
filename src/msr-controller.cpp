@@ -143,6 +143,8 @@ void MsrController::load_settings()
 			cfg.enabled = obs_data_get_bool(item, "enabled");
 			cfg.orientation = static_cast<MsrOrientation>(obs_data_get_int(item, "orientation"));
 			cfg.extra_audio_source = obs_data_get_string(item, "extra_audio_source");
+			if (cfg.extra_audio_source == cfg.source_name)
+				cfg.extra_audio_source.clear();
 			if (!cfg.source_name.empty())
 				settings_.sources.push_back(cfg);
 			obs_data_release(item);
@@ -474,6 +476,8 @@ void MsrController::ws_configure(obs_data_t *request_data, obs_data_t *response_
 			cfg.enabled = obs_data_get_bool(item, "enabled");
 			cfg.orientation = static_cast<MsrOrientation>(obs_data_get_int(item, "orientation"));
 			cfg.extra_audio_source = obs_data_get_string(item, "extra_audio_source");
+			if (cfg.extra_audio_source == cfg.source_name)
+				cfg.extra_audio_source.clear();
 			if (!cfg.source_name.empty())
 				s.sources.push_back(cfg);
 			obs_data_release(item);

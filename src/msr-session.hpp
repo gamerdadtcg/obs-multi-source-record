@@ -70,28 +70,51 @@ private:
 			}
 			if (ch_count == 0 || !audio_data->frames)
 				return;
-			if (ch_count > kChannels)
-				ch_count = kChannels;
 			ensure();
-			if (ch_count > channels)
-				channels = ch_count;
+			/* Always store stereo. Downmix mono / 2.1 / 5.1 / 7.1 so
+			 * application-audio capture (often >2ch) is not left with
+			 * silent surround planes or a mono-in-left-only image. */
+			channels = 2;
 
 			for (uint32_t i = 0; i < audio_data->frames; i++) {
 				if (size >= kCapacity) {
 					read_pos = (read_pos + 1) % kCapacity;
 					size--;
 				}
-				for (size_t ch = 0; ch < ch_count; ch++) {
+				auto sample = [&](size_t ch) -> float {
+					if (ch >= ch_count)
+						return 0.0f;
 					const float *in = (const float *)audio_data->data[ch];
-					float s = in ? in[i] : 0.0f;
-					if (s > 1.0f)
-						s = 1.0f;
-					if (s < -1.0f)
-						s = -1.0f;
-					data[ch][write_pos] = s;
+					return in ? in[i] : 0.0f;
+				};
+				float l = 0.0f, r = 0.0f;
+				if (ch_count == 1) {
+					l = r = sample(0);
+				} else if (ch_count == 2) {
+					l = sample(0);
+					r = sample(1);
+				} else {
+					/* Treat as surround: FL FR FC LFE ... */
+					l = sample(0);
+					r = sample(1);
+					const float fc = sample(2) * 0.707f;
+					l += fc;
+					r += fc;
+					if (ch_count >= 6) {
+						l += sample(4) * 0.707f; /* BL/SL */
+						r += sample(5) * 0.707f;
+					}
+					if (ch_count >= 8) {
+						l += sample(6) * 0.5f;
+						r += sample(7) * 0.5f;
+					}
 				}
-				for (size_t ch = ch_count; ch < channels; ch++)
-					data[ch][write_pos] = 0.0f;
+				if (l > 1.0f) l = 1.0f;
+				if (l < -1.0f) l = -1.0f;
+				if (r > 1.0f) r = 1.0f;
+				if (r < -1.0f) r = -1.0f;
+				data[0][write_pos] = l;
+				data[1][write_pos] = r;
 				write_pos = (write_pos + 1) % kCapacity;
 				size++;
 			}

@@ -232,8 +232,8 @@ void MsrDock::rebuild_source_list()
 		sr.extra_audio = new QComboBox(row);
 		sr.extra_audio->addItem(QString::fromUtf8(obs_module_text("ExtraAudioNone")), QString());
 		for (const QString &a : audio_names) {
-			if (a.isEmpty())
-				continue;
+			if (a.isEmpty() || a == name)
+				continue; /* never offer the row's own source as extra */
 			sr.extra_audio->addItem(a, a);
 		}
 
@@ -304,6 +304,8 @@ void MsrDock::apply_to_controller()
 		cfg.enabled = row.enabled->isChecked();
 		cfg.orientation = static_cast<MsrOrientation>(row.orientation->currentData().toInt());
 		cfg.extra_audio_source = row.extra_audio->currentData().toString().toStdString();
+		if (cfg.extra_audio_source == cfg.source_name)
+			cfg.extra_audio_source.clear();
 		s.sources.push_back(cfg);
 	}
 	c->set_settings(s);
