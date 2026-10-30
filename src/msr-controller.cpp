@@ -161,6 +161,8 @@ void MsrController::load_settings()
 			MsrSourceConfig cfg;
 			cfg.source_name = obs_data_get_string(item, "source_name");
 			cfg.enabled = obs_data_get_bool(item, "enabled");
+			if (obs_data_has_user_value(item, "replay_enabled"))
+				cfg.replay_enabled = obs_data_get_bool(item, "replay_enabled");
 			cfg.orientation = parse_orientation_token(obs_data_get_string(item, "orientation"),
 								  (int)obs_data_get_int(item, "orientation"));
 			cfg.extra_audio_source = obs_data_get_string(item, "extra_audio_source");
@@ -201,6 +203,27 @@ void MsrController::load_settings()
 		}
 		obs_data_array_release(darr);
 	}
+	/* Migrate: old global replay_enabled with no per-source flags → enable replay on recording sources. */
+	bool any_source_replay = false;
+	for (const auto &cfg : settings_.sources) {
+		if (cfg.replay_enabled) {
+			any_source_replay = true;
+			break;
+		}
+	}
+	if (settings_.replay_enabled && !any_source_replay) {
+		for (auto &cfg : settings_.sources) {
+			if (cfg.enabled)
+				cfg.replay_enabled = true;
+		}
+	}
+	settings_.replay_enabled = false;
+	for (const auto &cfg : settings_.sources) {
+		if (cfg.replay_enabled) {
+			settings_.replay_enabled = true;
+			break;
+		}
+	}
 	obs_data_release(data);
 }
 
@@ -216,6 +239,13 @@ void MsrController::save_settings()
 	obs_data_set_int(data, "audio_bitrate_kbps", settings_.audio_bitrate_kbps);
 	obs_data_set_int(data, "vertical_width", settings_.vertical_width);
 	obs_data_set_int(data, "vertical_height", settings_.vertical_height);
+	settings_.replay_enabled = false;
+	for (const auto &cfg : settings_.sources) {
+		if (cfg.replay_enabled) {
+			settings_.replay_enabled = true;
+			break;
+		}
+	}
 	obs_data_set_string(data, "auto_start", auto_start_token(settings_.auto_start));
 	obs_data_set_int(data, "auto_start_code", (int)settings_.auto_start);
 	obs_data_set_bool(data, "replay_enabled", settings_.replay_enabled);
@@ -230,6 +260,7 @@ void MsrController::save_settings()
 		obs_data_t *item = obs_data_create();
 		obs_data_set_string(item, "source_name", cfg.source_name.c_str());
 		obs_data_set_bool(item, "enabled", cfg.enabled);
+		obs_data_set_bool(item, "replay_enabled", cfg.replay_enabled);
 		obs_data_set_int(item, "orientation", static_cast<int>(cfg.orientation));
 		obs_data_set_string(item, "extra_audio_source", cfg.extra_audio_source.c_str());
 		obs_data_array_push_back(arr, item);
@@ -603,10 +634,6 @@ bool MsrController::start_replays()
 		std::lock_guard<std::mutex> lock(mutex_);
 		snap = settings_;
 	}
-	if (!snap.replay_enabled) {
-		obs_log(LOG_INFO, "replay buffers not enabled");
-		return false;
-	}
 	if (snap.output_folder.empty()) {
 		obs_log(LOG_ERROR, "output folder is empty (replay)");
 		return false;
@@ -616,7 +643,7 @@ bool MsrController::start_replays()
 	bool want_vertical = false;
 	std::vector<std::unique_ptr<MsrSession>> started;
 	for (const auto &cfg : snap.sources) {
-		if (!cfg.enabled || cfg.source_name.empty())
+		if (!cfg.replay_enabled || cfg.source_name.empty())
 			continue;
 		auto launch = [&](MsrOrientation ori, bool vert_canvas) {
 			auto session = std::make_unique<MsrSession>(cfg.source_name, ori, cfg.extra_audio_source, snap,
@@ -653,7 +680,9 @@ bool MsrController::start_replays()
 		replay_sessions_ = std::move(started);
 	}
 	if (any)
-		obs_log(LOG_INFO, "replay buffers started");
+		obs_log(LOG_INFO, "replay buffers started for selected sources");
+	else
+		obs_log(LOG_INFO, "no sources selected for replay buffer");
 	return any;
 }
 
@@ -697,12 +726,17 @@ void MsrController::sync_replays_to_settings()
 		std::lock_guard<std::mutex> lock(mutex_);
 		snap = settings_;
 	}
-	if (snap.replay_enabled) {
-		if (!replaying())
-			start_replays();
-	} else {
-		stop_replays();
+	bool any = false;
+	for (const auto &cfg : snap.sources) {
+		if (cfg.replay_enabled) {
+			any = true;
+			break;
+		}
 	}
+	if (any)
+		start_replays();
+	else
+		stop_replays();
 }
 
 void MsrController::on_obs_recording_started()
@@ -1027,6 +1061,7 @@ void MsrController::ws_get_settings(obs_data_t *request_data, obs_data_t *respon
 		obs_data_t *item = obs_data_create();
 		obs_data_set_string(item, "source_name", cfg.source_name.c_str());
 		obs_data_set_bool(item, "enabled", cfg.enabled);
+		obs_data_set_bool(item, "replay_enabled", cfg.replay_enabled);
 		obs_data_set_int(item, "orientation", static_cast<int>(cfg.orientation));
 		obs_data_set_string(item, "extra_audio_source", cfg.extra_audio_source.c_str());
 		obs_data_array_push_back(arr, item);
@@ -1128,6 +1163,8 @@ void MsrController::ws_configure(obs_data_t *request_data, obs_data_t *response_
 			MsrSourceConfig cfg;
 			cfg.source_name = obs_data_get_string(item, "source_name");
 			cfg.enabled = obs_data_get_bool(item, "enabled");
+			if (obs_data_has_user_value(item, "replay_enabled"))
+				cfg.replay_enabled = obs_data_get_bool(item, "replay_enabled");
 			cfg.orientation = parse_orientation_token(obs_data_get_string(item, "orientation"),
 								  (int)obs_data_get_int(item, "orientation"));
 			cfg.extra_audio_source = obs_data_get_string(item, "extra_audio_source");
@@ -1138,6 +1175,30 @@ void MsrController::ws_configure(obs_data_t *request_data, obs_data_t *response_
 			obs_data_release(item);
 		}
 		obs_data_array_release(arr);
+	}
+
+	/* If configure sets global replay_enabled without per-source flags, migrate. */
+	{
+		bool any_src = false;
+		for (const auto &cfg : s.sources) {
+			if (cfg.replay_enabled) {
+				any_src = true;
+				break;
+			}
+		}
+		if (s.replay_enabled && !any_src) {
+			for (auto &cfg : s.sources) {
+				if (cfg.enabled)
+					cfg.replay_enabled = true;
+			}
+		}
+		s.replay_enabled = false;
+		for (const auto &cfg : s.sources) {
+			if (cfg.replay_enabled) {
+				s.replay_enabled = true;
+				break;
+			}
+		}
 	}
 
 	obs_data_array_t *darr = obs_data_get_array(request_data, "destinations");
@@ -1230,12 +1291,9 @@ void MsrController::ws_start_replay(obs_data_t *request_data, obs_data_t *respon
 {
 	UNUSED_PARAMETER(request_data);
 	auto *self = static_cast<MsrController *>(priv);
-	if (self) {
-		MsrSettings s = self->settings();
-		s.replay_enabled = true;
-		self->set_settings(s);
-	}
-	obs_data_set_bool(response_data, "success", self && self->replaying());
+	/* Start buffers for sources already marked replay_enabled (does not change selection). */
+	bool ok = self && self->start_replays();
+	obs_data_set_bool(response_data, "success", ok);
 	obs_data_set_bool(response_data, "replaying", self && self->replaying());
 }
 
@@ -1243,11 +1301,8 @@ void MsrController::ws_stop_replay(obs_data_t *request_data, obs_data_t *respons
 {
 	UNUSED_PARAMETER(request_data);
 	auto *self = static_cast<MsrController *>(priv);
-	if (self) {
-		MsrSettings s = self->settings();
-		s.replay_enabled = false;
-		self->set_settings(s);
-	}
+	if (self)
+		self->stop_replays();
 	obs_data_set_bool(response_data, "success", true);
 	obs_data_set_bool(response_data, "replaying", false);
 }

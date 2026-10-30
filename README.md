@@ -108,16 +108,15 @@ In **Recording options**, set **Auto-start with OBS** to Off (default), When mai
 
 ### Replay buffer
 
-Enable **Enable replay buffer** and set the length (5–300 seconds, default 30). Each enabled MSR source (and the vertical canvas when used) gets its own OBS `replay_buffer` session. Buffers run **while enabled**, either alone or alongside MSR recording — they are independent of the Start recording button.
+Per-source **Replay** checkboxes (default off). Only checked sources run a buffer. Length is shared (default 30s).
 
-Save every active buffer at once with:
+Save with:
 
 - Dock **Save Replay**
 - Hotkey **Multi Source Record: Save Replay**
 - Stream Deck **Multi Source Record Save Replay**
 - Websocket vendor `save_replay` (also `start_replay` / `stop_replay` to toggle the feature)
 
-Saved clips use names like `{source}_{orientation}_replay_YYYY-MM-DD_hh-mm-ss`.
 
 ### File split
 

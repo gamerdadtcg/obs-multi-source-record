@@ -25,6 +25,7 @@ class QGroupBox;
 
 struct MsrSourceRow {
 	QCheckBox *enabled = nullptr;
+	QCheckBox *replay = nullptr;
 	QLabel *name = nullptr;
 	QComboBox *orientation = nullptr;
 	QComboBox *extra_audio = nullptr;
@@ -37,6 +38,7 @@ struct MsrDestRow {
 	QComboBox *orientation = nullptr;
 	QLineEdit *server = nullptr;
 	QLineEdit *key = nullptr;
+	QPushButton *remove = nullptr;
 	QCheckBox *track_checks[6] = {};
 };
 
@@ -55,6 +57,7 @@ public slots:
 	void on_save();
 	void on_start_stop_stream();
 	void on_add_destination();
+	void on_remove_destination();
 	void on_save_replay();
 	void update_recording_state(bool recording);
 	void on_split_mode_changed(int index);
@@ -81,7 +84,6 @@ private:
 	QSpinBox *vert_w_ = nullptr;
 	QSpinBox *vert_h_ = nullptr;
 	QComboBox *auto_start_combo_ = nullptr;
-	QCheckBox *replay_enabled_ = nullptr;
 	QSpinBox *replay_seconds_ = nullptr;
 	QComboBox *split_mode_combo_ = nullptr;
 	QSpinBox *split_time_min_ = nullptr;

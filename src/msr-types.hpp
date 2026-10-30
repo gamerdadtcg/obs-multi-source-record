@@ -37,6 +37,8 @@ enum class MsrOrientation {
 struct MsrSourceConfig {
 	std::string source_name;
 	bool enabled = false;
+	/** When true, this source gets a replay buffer (independent of recording enabled). Default off. */
+	bool replay_enabled = false;
 	MsrOrientation orientation = MsrOrientation::Horizontal;
 	std::string extra_audio_source; /* optional second audio source name */
 };
@@ -65,8 +67,9 @@ struct MsrSettings {
 	int vertical_height = 1920;
 	/** When not Off, MSR recording follows OBS main record and/or stream start/stop. Default Off. */
 	MsrAutoStartTrigger auto_start = MsrAutoStartTrigger::Off;
-	/** Per-source replay buffers (independent of MSR recording). Default off. */
+	/** Legacy/master: true if any source has replay_enabled (kept for status/configure compat). */
 	bool replay_enabled = false;
+	/** Replay buffer length in seconds (shared by all selected sources). Default 30. */
 	int replay_seconds = 30;
 	/** File split for MSR recordings (ffmpeg_muxer). Default Off. */
 	MsrSplitMode split_mode = MsrSplitMode::Off;

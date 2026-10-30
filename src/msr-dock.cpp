@@ -146,11 +146,9 @@ void MsrDock::build_ui()
 	opts_l->addWidget(as_hint);
 
 	auto *replay_row = new QHBoxLayout();
-	replay_enabled_ = new QCheckBox(QString::fromUtf8(obs_module_text("ReplayEnabled")), opts);
 	replay_seconds_ = new QSpinBox(opts);
 	replay_seconds_->setRange(5, 300);
 	replay_seconds_->setSuffix(QStringLiteral(" s"));
-	replay_row->addWidget(replay_enabled_);
 	replay_row->addWidget(new QLabel(QString::fromUtf8(obs_module_text("ReplaySeconds")), opts));
 	replay_row->addWidget(replay_seconds_);
 	replay_row->addStretch(1);
@@ -234,7 +232,7 @@ void MsrDock::build_ui()
 	ms->addWidget(ms_hint);
 	dest_list_layout_ = new QVBoxLayout();
 	dest_list_layout_->setContentsMargins(0, 0, 0, 0);
-	dest_list_layout_->setSpacing(4);
+	dest_list_layout_->setSpacing(8);
 	ms->addLayout(dest_list_layout_);
 	auto *add_dest = new QPushButton(QString::fromUtf8(obs_module_text("AddDestination")), multistream_box_);
 	connect(add_dest, &QPushButton::clicked, this, &MsrDock::on_add_destination);
@@ -312,6 +310,9 @@ void MsrDock::rebuild_source_list()
 		MsrSourceRow sr;
 		sr.source_name = name;
 		sr.enabled = new QCheckBox(row);
+		sr.enabled->setToolTip(QString::fromUtf8(obs_module_text("RecordSourceTooltip")));
+		sr.replay = new QCheckBox(QString::fromUtf8(obs_module_text("SourceReplay")), row);
+		sr.replay->setToolTip(QString::fromUtf8(obs_module_text("SourceReplayTooltip")));
 		sr.name = new QLabel(name, row);
 		sr.orientation = new QComboBox(row);
 		sr.orientation->addItem(QString::fromUtf8(obs_module_text("OrientationHorizontal")),
@@ -331,6 +332,8 @@ void MsrDock::rebuild_source_list()
 		for (const auto &cfg : settings.sources) {
 			if (QString::fromStdString(cfg.source_name) == name) {
 				sr.enabled->setChecked(cfg.enabled);
+				if (sr.replay)
+					sr.replay->setChecked(cfg.replay_enabled);
 				int oi = sr.orientation->findData((int)cfg.orientation);
 				if (oi >= 0)
 					sr.orientation->setCurrentIndex(oi);
@@ -343,6 +346,7 @@ void MsrDock::rebuild_source_list()
 
 		hl->addWidget(sr.enabled);
 		hl->addWidget(sr.name, 1);
+		hl->addWidget(sr.replay);
 		hl->addWidget(sr.orientation);
 		hl->addWidget(sr.extra_audio);
 		source_list_layout_->addWidget(row);
@@ -366,20 +370,29 @@ void MsrDock::rebuild_dest_list()
 	if (auto *c = MsrController::instance())
 		settings = c->settings();
 
-	for (const auto &d : settings.destinations) {
-		auto *row = new QWidget(multistream_box_);
-		auto *vl = new QVBoxLayout(row);
-		vl->setContentsMargins(0, 0, 0, 0);
-		vl->setSpacing(2);
-		auto *top = new QWidget(row);
+	for (int di = 0; di < (int)settings.destinations.size(); di++) {
+		const auto &d = settings.destinations[(size_t)di];
+
+		auto *card = new QFrame(multistream_box_);
+		card->setFrameShape(QFrame::StyledPanel);
+		card->setFrameShadow(QFrame::Raised);
+		card->setMinimumWidth(260);
+		auto *vl = new QVBoxLayout(card);
+		vl->setContentsMargins(8, 8, 8, 8);
+		vl->setSpacing(6);
+
+		auto *top = new QWidget(card);
 		auto *hl = new QHBoxLayout(top);
 		hl->setContentsMargins(0, 0, 0, 0);
+		hl->setSpacing(6);
 
 		MsrDestRow dr;
 		dr.enabled = new QCheckBox(top);
 		dr.enabled->setChecked(d.enabled);
+		dr.enabled->setToolTip(QString::fromUtf8(obs_module_text("DestinationEnabled")));
 		dr.name = new QLineEdit(QString::fromStdString(d.name), top);
 		dr.name->setPlaceholderText(QString::fromUtf8(obs_module_text("DestinationName")));
+		dr.name->setMinimumWidth(100);
 		dr.orientation = new QComboBox(top);
 		dr.orientation->addItem(QString::fromUtf8(obs_module_text("OrientationHorizontal")),
 					(int)MsrOrientation::Horizontal);
@@ -388,21 +401,26 @@ void MsrDock::rebuild_dest_list()
 		int oi = dr.orientation->findData((int)d.orientation);
 		if (oi >= 0)
 			dr.orientation->setCurrentIndex(oi);
-		dr.server = new QLineEdit(QString::fromStdString(d.server_url), top);
-		dr.server->setPlaceholderText(QString::fromUtf8(obs_module_text("DestinationServer")));
-		dr.key = new QLineEdit(top);
-		dr.key->setEchoMode(QLineEdit::Password);
-		dr.key->setPlaceholderText(QString::fromUtf8(obs_module_text("DestinationKey")));
-		/* Keep existing key unless the user types a replacement. */
-		dr.key->setText(QString::fromStdString(d.stream_key));
+		dr.remove = new QPushButton(QString::fromUtf8(obs_module_text("RemoveDestination")), top);
+		dr.remove->setProperty("destIndex", di);
+		connect(dr.remove, &QPushButton::clicked, this, &MsrDock::on_remove_destination);
 
 		hl->addWidget(dr.enabled);
 		hl->addWidget(dr.name, 1);
 		hl->addWidget(dr.orientation);
-		hl->addWidget(dr.server, 2);
-		hl->addWidget(dr.key, 1);
+		hl->addWidget(dr.remove);
 
-		auto *tracks = new QWidget(row);
+		dr.server = new QLineEdit(QString::fromStdString(d.server_url), card);
+		dr.server->setPlaceholderText(QString::fromUtf8(obs_module_text("DestinationServer")));
+		dr.server->setMinimumWidth(200);
+
+		dr.key = new QLineEdit(card);
+		dr.key->setEchoMode(QLineEdit::Password);
+		dr.key->setPlaceholderText(QString::fromUtf8(obs_module_text("DestinationKey")));
+		dr.key->setText(QString::fromStdString(d.stream_key));
+		dr.key->setMinimumWidth(200);
+
+		auto *tracks = new QWidget(card);
 		auto *tl = new QHBoxLayout(tracks);
 		tl->setContentsMargins(0, 0, 0, 0);
 		tl->setSpacing(4);
@@ -417,8 +435,12 @@ void MsrDock::rebuild_dest_list()
 		tl->addStretch(1);
 
 		vl->addWidget(top);
+		vl->addWidget(new QLabel(QString::fromUtf8(obs_module_text("DestinationServer")), card));
+		vl->addWidget(dr.server);
+		vl->addWidget(new QLabel(QString::fromUtf8(obs_module_text("DestinationKey")), card));
+		vl->addWidget(dr.key);
 		vl->addWidget(tracks);
-		dest_list_layout_->addWidget(row);
+		dest_list_layout_->addWidget(card);
 		dest_rows_.push_back(dr);
 	}
 }
@@ -446,8 +468,6 @@ void MsrDock::load_from_controller()
 		if (ai >= 0)
 			auto_start_combo_->setCurrentIndex(ai);
 	}
-	if (replay_enabled_)
-		replay_enabled_->setChecked(s.replay_enabled);
 	if (replay_seconds_)
 		replay_seconds_->setValue(s.replay_seconds);
 	if (split_mode_combo_) {
@@ -491,8 +511,6 @@ void MsrDock::apply_to_controller()
 	s.vertical_height = vert_h_->value();
 	if (auto_start_combo_)
 		s.auto_start = static_cast<MsrAutoStartTrigger>(auto_start_combo_->currentData().toInt());
-	if (replay_enabled_)
-		s.replay_enabled = replay_enabled_->isChecked();
 	if (replay_seconds_)
 		s.replay_seconds = replay_seconds_->value();
 	if (split_mode_combo_)
@@ -506,11 +524,19 @@ void MsrDock::apply_to_controller()
 		MsrSourceConfig cfg;
 		cfg.source_name = row.source_name.toStdString();
 		cfg.enabled = row.enabled->isChecked();
+		cfg.replay_enabled = row.replay && row.replay->isChecked();
 		cfg.orientation = static_cast<MsrOrientation>(row.orientation->currentData().toInt());
 		cfg.extra_audio_source = row.extra_audio->currentData().toString().toStdString();
 		if (cfg.extra_audio_source == cfg.source_name)
 			cfg.extra_audio_source.clear();
 		s.sources.push_back(cfg);
+	}
+	s.replay_enabled = false;
+	for (const auto &cfg : s.sources) {
+		if (cfg.replay_enabled) {
+			s.replay_enabled = true;
+			break;
+		}
 	}
 	s.destinations.clear();
 	for (const auto &row : dest_rows_) {
@@ -612,6 +638,25 @@ void MsrDock::on_add_destination()
 	d.orientation = MsrOrientation::Horizontal;
 	d.server_url = "rtmp://127.0.0.1:1935/live";
 	s.destinations.push_back(d);
+	c->set_settings(s);
+	rebuild_dest_list();
+}
+
+
+void MsrDock::on_remove_destination()
+{
+	auto *btn = qobject_cast<QPushButton *>(sender());
+	if (!btn)
+		return;
+	const int idx = btn->property("destIndex").toInt();
+	apply_to_controller();
+	auto *c = MsrController::instance();
+	if (!c)
+		return;
+	MsrSettings s = c->settings();
+	if (idx < 0 || idx >= (int)s.destinations.size())
+		return;
+	s.destinations.erase(s.destinations.begin() + idx);
 	c->set_settings(s);
 	rebuild_dest_list();
 }

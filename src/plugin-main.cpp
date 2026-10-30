@@ -52,6 +52,8 @@ static void frontend_event(enum obs_frontend_event event, void *)
 			auto s = c->settings();
 			vc->ensure((uint32_t)s.vertical_width, (uint32_t)s.vertical_height);
 		}
+		if (preview_dock)
+			QMetaObject::invokeMethod(preview_dock, "refresh_all", Qt::QueuedConnection);
 		/* Start replay buffers if enabled in saved settings (safe; no OBS stream). */
 		c->sync_replays_to_settings();
 	} else if (event == OBS_FRONTEND_EVENT_RECORDING_STARTED) {
