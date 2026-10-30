@@ -154,18 +154,32 @@ bool MsrStreamSession::setup_encoders_and_output()
 {
 	const int vbr = dest_.video_bitrate_kbps > 0 ? dest_.video_bitrate_kbps : settings_.video_bitrate_kbps;
 	const int abr = dest_.audio_bitrate_kbps > 0 ? dest_.audio_bitrate_kbps : settings_.audio_bitrate_kbps;
-	const char *venc_id = resolve_video_encoder_id();
+	/* Prefer software x264 for parallel stream outputs — NVENC texture encoders often
+	 * fail obs_output_initialize_encoders when a second session shares the main video. */
+	const char *venc_id = "obs_x264";
+	if (settings_.video_encoder == "nvenc" || settings_.video_encoder == "amf" ||
+	    settings_.video_encoder == "qsv") {
+		const char *pref = resolve_video_encoder_id();
+		if (pref)
+			venc_id = pref;
+	}
 
 	obs_data_t *vsettings = obs_data_create();
 	obs_data_set_int(vsettings, "bitrate", vbr);
 	obs_data_set_string(vsettings, "rate_control", "CBR");
 	obs_data_set_int(vsettings, "keyint_sec", 2);
-	obs_data_set_string(vsettings, "preset", "quality");
+	obs_data_set_string(vsettings, "preset", "veryfast");
+	obs_data_set_string(vsettings, "tune", "zerolatency");
 	obs_data_set_string(vsettings, "preset2", "p5");
 
 	const std::string tag = sanitize_name(dest_.name) + "-" + orientation_token(dest_.orientation);
 	std::string enc_name = "msr-stream-venc-" + tag;
 	video_encoder_ = obs_video_encoder_create(venc_id, enc_name.c_str(), vsettings, nullptr);
+	if (!video_encoder_ && strcmp(venc_id, "obs_x264") != 0) {
+		obs_log(LOG_WARNING, "stream encoder %s unavailable; falling back to x264", venc_id);
+		venc_id = "obs_x264";
+		video_encoder_ = obs_video_encoder_create(venc_id, enc_name.c_str(), vsettings, nullptr);
+	}
 	obs_data_release(vsettings);
 	if (!video_encoder_) {
 		obs_log(LOG_ERROR, "failed to create stream video encoder %s for '%s'", venc_id, dest_.name.c_str());
@@ -189,6 +203,7 @@ bool MsrStreamSession::setup_encoders_and_output()
 	obs_data_t *osettings = obs_data_create();
 	obs_data_set_string(osettings, "server", dest_.server_url.c_str());
 	obs_data_set_string(osettings, "key", dest_.stream_key.c_str());
+	obs_data_set_bool(osettings, "use_auth", false);
 
 	std::string out_name = "msr-stream-out-" + tag;
 	rtmp_output_ = obs_output_create("rtmp_output", out_name.c_str(), osettings, nullptr);
@@ -218,9 +233,10 @@ bool MsrStreamSession::start()
 	}
 
 	if (!obs_output_start(rtmp_output_)) {
-		/* Never log the stream key — only server + dest name. */
-		obs_log(LOG_ERROR, "obs_output_start failed for stream '%s' -> %s (key masked)", dest_.name.c_str(),
-			dest_.server_url.c_str());
+		const char *err = obs_output_get_last_error(rtmp_output_);
+		/* Never log the stream key — only server + dest name + last_error. */
+		obs_log(LOG_ERROR, "obs_output_start failed for stream '%s' -> %s (key masked)%s%s", dest_.name.c_str(),
+			dest_.server_url.c_str(), err && *err ? ": " : "", err ? err : "");
 		teardown();
 		return false;
 	}
