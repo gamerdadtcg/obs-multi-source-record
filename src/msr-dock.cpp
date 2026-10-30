@@ -29,6 +29,8 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QFileDialog>
 #include <QFrame>
 
+#include <string>
+
 namespace {
 
 struct SourceListCtx {
@@ -166,6 +168,27 @@ void MsrDock::build_ui()
 
 	root->addWidget(advanced_box_);
 
+	multistream_box_ = new QGroupBox(QString::fromUtf8(obs_module_text("Multistream")), this);
+	multistream_box_->setCheckable(true);
+	multistream_box_->setChecked(false);
+	auto *ms = new QVBoxLayout(multistream_box_);
+	auto *ms_hint = new QLabel(QString::fromUtf8(obs_module_text("MultistreamHint")), multistream_box_);
+	ms_hint->setWordWrap(true);
+	ms->addWidget(ms_hint);
+	dest_list_layout_ = new QVBoxLayout();
+	dest_list_layout_->setContentsMargins(0, 0, 0, 0);
+	dest_list_layout_->setSpacing(4);
+	ms->addLayout(dest_list_layout_);
+	auto *add_dest = new QPushButton(QString::fromUtf8(obs_module_text("AddDestination")), multistream_box_);
+	connect(add_dest, &QPushButton::clicked, this, &MsrDock::on_add_destination);
+	ms->addWidget(add_dest);
+	stream_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("StartStreaming")), multistream_box_);
+	connect(stream_btn_, &QPushButton::clicked, this, &MsrDock::on_start_stop_stream);
+	ms->addWidget(stream_btn_);
+	stream_status_label_ = new QLabel(QString::fromUtf8(obs_module_text("StatusStreamIdle")), multistream_box_);
+	ms->addWidget(stream_status_label_);
+	root->addWidget(multistream_box_);
+
 	auto *btn_row = new QHBoxLayout();
 	auto *save_btn = new QPushButton(QString::fromUtf8(obs_module_text("Save")), this);
 	connect(save_btn, &QPushButton::clicked, this, &MsrDock::on_save);
@@ -268,6 +291,57 @@ void MsrDock::rebuild_source_list()
 	source_list_layout_->addStretch(1);
 }
 
+void MsrDock::rebuild_dest_list()
+{
+	if (!dest_list_layout_)
+		return;
+	while (QLayoutItem *item = dest_list_layout_->takeAt(0)) {
+		if (QWidget *w = item->widget())
+			w->deleteLater();
+		delete item;
+	}
+	dest_rows_.clear();
+
+	MsrSettings settings;
+	if (auto *c = MsrController::instance())
+		settings = c->settings();
+
+	for (const auto &d : settings.destinations) {
+		auto *row = new QWidget(multistream_box_);
+		auto *hl = new QHBoxLayout(row);
+		hl->setContentsMargins(0, 0, 0, 0);
+
+		MsrDestRow dr;
+		dr.enabled = new QCheckBox(row);
+		dr.enabled->setChecked(d.enabled);
+		dr.name = new QLineEdit(QString::fromStdString(d.name), row);
+		dr.name->setPlaceholderText(QString::fromUtf8(obs_module_text("DestinationName")));
+		dr.orientation = new QComboBox(row);
+		dr.orientation->addItem(QString::fromUtf8(obs_module_text("OrientationHorizontal")),
+					(int)MsrOrientation::Horizontal);
+		dr.orientation->addItem(QString::fromUtf8(obs_module_text("OrientationVertical")),
+					(int)MsrOrientation::Vertical);
+		int oi = dr.orientation->findData((int)d.orientation);
+		if (oi >= 0)
+			dr.orientation->setCurrentIndex(oi);
+		dr.server = new QLineEdit(QString::fromStdString(d.server_url), row);
+		dr.server->setPlaceholderText(QString::fromUtf8(obs_module_text("DestinationServer")));
+		dr.key = new QLineEdit(row);
+		dr.key->setEchoMode(QLineEdit::Password);
+		dr.key->setPlaceholderText(QString::fromUtf8(obs_module_text("DestinationKey")));
+		/* Keep existing key unless the user types a replacement. */
+		dr.key->setText(QString::fromStdString(d.stream_key));
+
+		hl->addWidget(dr.enabled);
+		hl->addWidget(dr.name, 1);
+		hl->addWidget(dr.orientation);
+		hl->addWidget(dr.server, 2);
+		hl->addWidget(dr.key, 1);
+		dest_list_layout_->addWidget(row);
+		dest_rows_.push_back(dr);
+	}
+}
+
 void MsrDock::load_from_controller()
 {
 	auto *c = MsrController::instance();
@@ -287,6 +361,16 @@ void MsrDock::load_from_controller()
 	vert_w_->setValue(s.vertical_width);
 	vert_h_->setValue(s.vertical_height);
 	rebuild_source_list();
+	rebuild_dest_list();
+	if (stream_btn_) {
+		const bool streaming = c->streaming();
+		stream_btn_->setText(
+			QString::fromUtf8(obs_module_text(streaming ? "StopStreaming" : "StartStreaming")));
+		if (stream_status_label_) {
+			stream_status_label_->setText(
+				QString::fromUtf8(obs_module_text(streaming ? "StatusStreaming" : "StatusStreamIdle")));
+		}
+	}
 }
 
 void MsrDock::apply_to_controller()
@@ -315,6 +399,17 @@ void MsrDock::apply_to_controller()
 		if (cfg.extra_audio_source == cfg.source_name)
 			cfg.extra_audio_source.clear();
 		s.sources.push_back(cfg);
+	}
+	s.destinations.clear();
+	for (const auto &row : dest_rows_) {
+		MsrStreamDestination d;
+		d.name = row.name->text().trimmed().toStdString();
+		d.enabled = row.enabled->isChecked();
+		d.orientation = static_cast<MsrOrientation>(row.orientation->currentData().toInt());
+		d.server_url = row.server->text().trimmed().toStdString();
+		d.stream_key = row.key->text().toStdString();
+		if (!d.name.empty())
+			s.destinations.push_back(d);
 	}
 	c->set_settings(s);
 }
@@ -383,5 +478,40 @@ void MsrDock::update_recording_state(bool recording)
 	} else {
 		start_btn_->setText(QString::fromUtf8(obs_module_text("StartRecording")));
 		status_label_->setText(QString::fromUtf8(obs_module_text("StatusIdle")));
+	}
+}
+
+void MsrDock::on_add_destination()
+{
+	apply_to_controller();
+	auto *c = MsrController::instance();
+	if (!c)
+		return;
+	MsrSettings s = c->settings();
+	MsrStreamDestination d;
+	d.name = "dest" + std::to_string(s.destinations.size() + 1);
+	d.enabled = false;
+	d.orientation = MsrOrientation::Horizontal;
+	d.server_url = "rtmp://127.0.0.1:1935/live";
+	s.destinations.push_back(d);
+	c->set_settings(s);
+	rebuild_dest_list();
+}
+
+void MsrDock::on_start_stop_stream()
+{
+	auto *c = MsrController::instance();
+	if (!c)
+		return;
+	apply_to_controller();
+	if (c->streaming())
+		c->stop_streams();
+	else
+		c->start_streams();
+	const bool streaming = c->streaming();
+	stream_btn_->setText(QString::fromUtf8(obs_module_text(streaming ? "StopStreaming" : "StartStreaming")));
+	if (stream_status_label_) {
+		stream_status_label_->setText(
+			QString::fromUtf8(obs_module_text(streaming ? "StatusStreaming" : "StatusStreamIdle")));
 	}
 }

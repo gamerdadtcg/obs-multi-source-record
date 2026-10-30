@@ -31,6 +31,14 @@ struct MsrSourceRow {
 	QString source_name;
 };
 
+struct MsrDestRow {
+	QCheckBox *enabled = nullptr;
+	QLineEdit *name = nullptr;
+	QComboBox *orientation = nullptr;
+	QLineEdit *server = nullptr;
+	QLineEdit *key = nullptr;
+};
+
 class MsrDock : public QWidget {
 	Q_OBJECT
 public:
@@ -44,6 +52,8 @@ public slots:
 	void on_add_chapter();
 	void on_browse_folder();
 	void on_save();
+	void on_start_stop_stream();
+	void on_add_destination();
 	void update_recording_state(bool recording);
 
 private:
@@ -51,11 +61,14 @@ private:
 	void load_from_controller();
 	void apply_to_controller();
 	void rebuild_source_list();
+	void rebuild_dest_list();
 	QStringList enumerate_sources() const;
 	QStringList enumerate_audio_sources() const;
 
 	QVBoxLayout *source_list_layout_ = nullptr;
 	std::vector<MsrSourceRow> rows_;
+	QVBoxLayout *dest_list_layout_ = nullptr;
+	std::vector<MsrDestRow> dest_rows_;
 	QLineEdit *folder_edit_ = nullptr;
 	QLineEdit *pattern_edit_ = nullptr;
 	QComboBox *container_combo_ = nullptr;
@@ -67,6 +80,9 @@ private:
 	QPushButton *start_btn_ = nullptr;
 	QPushButton *pause_btn_ = nullptr;
 	QPushButton *chapter_btn_ = nullptr;
+	QPushButton *stream_btn_ = nullptr;
 	QLabel *status_label_ = nullptr;
+	QLabel *stream_status_label_ = nullptr;
 	QGroupBox *advanced_box_ = nullptr;
+	QGroupBox *multistream_box_ = nullptr;
 };

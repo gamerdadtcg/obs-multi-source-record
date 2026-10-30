@@ -95,6 +95,18 @@ The dock has **Pause** / **Resume** and **Chapter** buttons next to Start/Stop. 
 
 Vertical (and the vertical half of Both) records the shared **MSR Vertical** canvas once — not a per-source center crop. The plugin creates that canvas (default scene named **Vertical**) at the resolution in Advanced (default **1080×1920**). Compose your vertical layout in that canvas’s scenes; open **View → Docks → MSR Vertical Preview** to see it. Horizontal recording is unchanged (one file per enabled source).
 
+
+## Multistream destinations
+
+Add RTMP/RTMPS destinations that publish the **main (horizontal) canvas** or the **MSR Vertical** canvas. These are separate from OBS’s own Start Streaming button and never share OBS stream keys.
+
+- Each destination: name, enabled, Horizontal or Vertical, server URL, stream key
+- Stream keys are **masked** in the dock / `get_settings` and **never logged**
+- Vendor requests: `start_stream`, `stop_stream`, `toggle_stream` (plus `configure` / `get_settings` `destinations` array)
+- Hotkey: **Multi Source Record: Start/Stop Stream**
+
+For local tests use MediaMTX (`rtmp://127.0.0.1:1935/...`). Do not point agent tests at live Kick/YouTube keys.
+
 ## Stream Deck
 
 ### Option A — included plugin

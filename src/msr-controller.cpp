@@ -9,6 +9,7 @@ the Free Software Foundation; either version 2 of the License, or
 */
 
 #include "msr-controller.hpp"
+#include "msr-stream-session.hpp"
 #include "msr-vertical-canvas.hpp"
 #include "plugin-support.h"
 #include "obs-websocket-api.h"
@@ -44,6 +45,7 @@ void MsrController::destroy()
 MsrController::~MsrController()
 {
 	unregister_hotkey();
+	stop_streams();
 	stop_all();
 }
 
@@ -152,6 +154,34 @@ void MsrController::load_settings()
 		}
 		obs_data_array_release(arr);
 	}
+
+	obs_data_array_t *darr = obs_data_get_array(data, "destinations");
+	if (darr) {
+		const size_t n = obs_data_array_count(darr);
+		for (size_t i = 0; i < n; i++) {
+			obs_data_t *item = obs_data_array_item(darr, i);
+			MsrStreamDestination d;
+			d.name = obs_data_get_string(item, "name");
+			d.enabled = obs_data_get_bool(item, "enabled");
+			d.orientation = static_cast<MsrOrientation>(obs_data_get_int(item, "orientation"));
+			if (d.orientation == MsrOrientation::Both)
+				d.orientation = MsrOrientation::Horizontal;
+			d.server_url = obs_data_get_string(item, "server_url");
+			d.stream_key = obs_data_get_string(item, "stream_key");
+			if (obs_data_has_user_value(item, "video_bitrate_kbps"))
+				d.video_bitrate_kbps = (int)obs_data_get_int(item, "video_bitrate_kbps");
+			if (obs_data_has_user_value(item, "audio_bitrate_kbps"))
+				d.audio_bitrate_kbps = (int)obs_data_get_int(item, "audio_bitrate_kbps");
+			if (obs_data_has_user_value(item, "audio_track_mask"))
+				d.audio_track_mask = (uint32_t)obs_data_get_int(item, "audio_track_mask");
+			if (d.audio_track_mask == 0)
+				d.audio_track_mask = 1u;
+			if (!d.name.empty())
+				settings_.destinations.push_back(d);
+			obs_data_release(item);
+		}
+		obs_data_array_release(darr);
+	}
 	obs_data_release(data);
 }
 
@@ -180,6 +210,23 @@ void MsrController::save_settings()
 	}
 	obs_data_set_array(data, "sources", arr);
 	obs_data_array_release(arr);
+
+	obs_data_array_t *darr = obs_data_array_create();
+	for (const auto &d : settings_.destinations) {
+		obs_data_t *item = obs_data_create();
+		obs_data_set_string(item, "name", d.name.c_str());
+		obs_data_set_bool(item, "enabled", d.enabled);
+		obs_data_set_int(item, "orientation", static_cast<int>(d.orientation));
+		obs_data_set_string(item, "server_url", d.server_url.c_str());
+		obs_data_set_string(item, "stream_key", d.stream_key.c_str());
+		obs_data_set_int(item, "video_bitrate_kbps", d.video_bitrate_kbps);
+		obs_data_set_int(item, "audio_bitrate_kbps", d.audio_bitrate_kbps);
+		obs_data_set_int(item, "audio_track_mask", (long long)d.audio_track_mask);
+		obs_data_array_push_back(darr, item);
+		obs_data_release(item);
+	}
+	obs_data_set_array(data, "destinations", darr);
+	obs_data_array_release(darr);
 
 	const char *json = obs_data_get_json(data);
 	std::ofstream out(settings_path(), std::ios::trunc);
@@ -333,6 +380,86 @@ void MsrController::stop_all()
 	notify_state();
 }
 
+bool MsrController::streaming() const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	for (const auto &s : stream_sessions_) {
+		if (s && s->active())
+			return true;
+	}
+	return false;
+}
+
+std::vector<std::string> MsrController::active_stream_names() const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	std::vector<std::string> out;
+	for (const auto &s : stream_sessions_) {
+		if (s && s->active())
+			out.push_back(s->name());
+	}
+	return out;
+}
+
+bool MsrController::start_streams()
+{
+	stop_streams();
+
+	MsrSettings snap;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		snap = settings_;
+	}
+
+	bool any = false;
+	std::vector<std::unique_ptr<MsrStreamSession>> started;
+	for (const auto &dest : snap.destinations) {
+		if (!dest.enabled || dest.name.empty() || dest.server_url.empty())
+			continue;
+		auto session = std::make_unique<MsrStreamSession>(dest, snap);
+		if (session->start()) {
+			started.push_back(std::move(session));
+			any = true;
+		}
+	}
+
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		stream_sessions_ = std::move(started);
+	}
+	if (!any) {
+		size_t enabled = 0;
+		for (const auto &d : snap.destinations) {
+			if (d.enabled && !d.name.empty())
+				enabled++;
+		}
+		obs_log(LOG_ERROR, "start_streams produced no outputs (%zu enabled destination(s))", enabled);
+	}
+	return any;
+}
+
+void MsrController::stop_streams()
+{
+	std::vector<std::unique_ptr<MsrStreamSession>> to_stop;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		to_stop.swap(stream_sessions_);
+	}
+	for (auto &s : to_stop) {
+		if (s)
+			s->stop();
+	}
+}
+
+bool MsrController::toggle_streams()
+{
+	if (streaming()) {
+		stop_streams();
+		return false;
+	}
+	return start_streams();
+}
+
 bool MsrController::toggle()
 {
 	if (recording()) {
@@ -459,6 +586,17 @@ void MsrController::chapter_hotkey_pressed(void *data, obs_hotkey_id id, obs_hot
 		self->add_chapter({});
 }
 
+void MsrController::stream_hotkey_pressed(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
+{
+	UNUSED_PARAMETER(id);
+	UNUSED_PARAMETER(hotkey);
+	if (!pressed)
+		return;
+	auto *self = static_cast<MsrController *>(data);
+	if (self)
+		self->toggle_streams();
+}
+
 void MsrController::register_hotkey()
 {
 	if (hotkey_id_ == OBS_INVALID_HOTKEY_ID) {
@@ -468,6 +606,10 @@ void MsrController::register_hotkey()
 	if (pause_hotkey_id_ == OBS_INVALID_HOTKEY_ID) {
 		pause_hotkey_id_ = obs_hotkey_register_frontend("msr.pause", "Multi Source Record: Pause/Resume",
 								pause_hotkey_pressed, this);
+	}
+	if (stream_hotkey_id_ == OBS_INVALID_HOTKEY_ID) {
+		stream_hotkey_id_ = obs_hotkey_register_frontend("msr.stream", "Multi Source Record: Start/Stop Stream",
+								 stream_hotkey_pressed, this);
 	}
 }
 
@@ -484,6 +626,10 @@ void MsrController::unregister_hotkey()
 	if (chapter_hotkey_id_ != OBS_INVALID_HOTKEY_ID) {
 		obs_hotkey_unregister(chapter_hotkey_id_);
 		chapter_hotkey_id_ = OBS_INVALID_HOTKEY_ID;
+	}
+	if (stream_hotkey_id_ != OBS_INVALID_HOTKEY_ID) {
+		obs_hotkey_unregister(stream_hotkey_id_);
+		stream_hotkey_id_ = OBS_INVALID_HOTKEY_ID;
 	}
 }
 
@@ -569,9 +715,11 @@ void MsrController::ws_status(obs_data_t *request_data, obs_data_t *response_dat
 	auto *self = static_cast<MsrController *>(priv);
 	bool rec = self && self->recording();
 	bool paused = self && self->paused();
+	bool streaming = self && self->streaming();
 	obs_data_set_bool(response_data, "success", true);
 	obs_data_set_bool(response_data, "recording", rec);
 	obs_data_set_bool(response_data, "paused", paused);
+	obs_data_set_bool(response_data, "streaming", streaming);
 	obs_data_array_t *arr = obs_data_array_create();
 	if (self) {
 		for (const auto &path : self->active_outputs()) {
@@ -583,6 +731,17 @@ void MsrController::ws_status(obs_data_t *request_data, obs_data_t *response_dat
 	}
 	obs_data_set_array(response_data, "outputs", arr);
 	obs_data_array_release(arr);
+	obs_data_array_t *sarr = obs_data_array_create();
+	if (self) {
+		for (const auto &name : self->active_stream_names()) {
+			obs_data_t *item = obs_data_create();
+			obs_data_set_string(item, "name", name.c_str());
+			obs_data_array_push_back(sarr, item);
+			obs_data_release(item);
+		}
+	}
+	obs_data_set_array(response_data, "streams", sarr);
+	obs_data_array_release(sarr);
 }
 
 void MsrController::ws_get_settings(obs_data_t *request_data, obs_data_t *response_data, void *priv)
@@ -615,6 +774,23 @@ void MsrController::ws_get_settings(obs_data_t *request_data, obs_data_t *respon
 	}
 	obs_data_set_array(response_data, "sources", arr);
 	obs_data_array_release(arr);
+	obs_data_array_t *darr = obs_data_array_create();
+	for (const auto &d : s.destinations) {
+		obs_data_t *item = obs_data_create();
+		obs_data_set_string(item, "name", d.name.c_str());
+		obs_data_set_bool(item, "enabled", d.enabled);
+		obs_data_set_int(item, "orientation", static_cast<int>(d.orientation));
+		obs_data_set_string(item, "server_url", d.server_url.c_str());
+		obs_data_set_bool(item, "stream_key_set", !d.stream_key.empty());
+		obs_data_set_string(item, "stream_key_masked", mask_stream_key(d.stream_key).c_str());
+		obs_data_set_int(item, "video_bitrate_kbps", d.video_bitrate_kbps);
+		obs_data_set_int(item, "audio_bitrate_kbps", d.audio_bitrate_kbps);
+		obs_data_set_int(item, "audio_track_mask", (long long)d.audio_track_mask);
+		obs_data_array_push_back(darr, item);
+		obs_data_release(item);
+	}
+	obs_data_set_array(response_data, "destinations", darr);
+	obs_data_array_release(darr);
 }
 
 void MsrController::ws_configure(obs_data_t *request_data, obs_data_t *response_data, void *priv)
@@ -671,9 +847,79 @@ void MsrController::ws_configure(obs_data_t *request_data, obs_data_t *response_
 		obs_data_array_release(arr);
 	}
 
+	obs_data_array_t *darr = obs_data_get_array(request_data, "destinations");
+	if (darr) {
+		std::vector<MsrStreamDestination> prev = s.destinations;
+		s.destinations.clear();
+		const size_t n = obs_data_array_count(darr);
+		for (size_t i = 0; i < n; i++) {
+			obs_data_t *item = obs_data_array_item(darr, i);
+			MsrStreamDestination d;
+			d.name = obs_data_get_string(item, "name");
+			d.enabled = obs_data_get_bool(item, "enabled");
+			d.orientation = static_cast<MsrOrientation>(obs_data_get_int(item, "orientation"));
+			if (d.orientation == MsrOrientation::Both)
+				d.orientation = MsrOrientation::Horizontal;
+			d.server_url = obs_data_get_string(item, "server_url");
+			/* Preserve prior key when stream_key is omitted from the payload. */
+			std::string prior_key;
+			for (const auto &p : prev) {
+				if (p.name == d.name) {
+					prior_key = p.stream_key;
+					break;
+				}
+			}
+			if (obs_data_has_user_value(item, "stream_key"))
+				d.stream_key = obs_data_get_string(item, "stream_key");
+			else
+				d.stream_key = prior_key;
+			if (obs_data_has_user_value(item, "video_bitrate_kbps"))
+				d.video_bitrate_kbps = (int)obs_data_get_int(item, "video_bitrate_kbps");
+			if (obs_data_has_user_value(item, "audio_bitrate_kbps"))
+				d.audio_bitrate_kbps = (int)obs_data_get_int(item, "audio_bitrate_kbps");
+			if (obs_data_has_user_value(item, "audio_track_mask"))
+				d.audio_track_mask = (uint32_t)obs_data_get_int(item, "audio_track_mask");
+			if (d.audio_track_mask == 0)
+				d.audio_track_mask = 1u;
+			if (!d.name.empty())
+				s.destinations.push_back(d);
+			obs_data_release(item);
+		}
+		obs_data_array_release(darr);
+	}
+
 	self->set_settings(s);
 	obs_data_set_bool(response_data, "success", true);
 	obs_data_set_bool(response_data, "recording", self->recording());
+	obs_data_set_bool(response_data, "streaming", self->streaming());
+}
+
+void MsrController::ws_start_stream(obs_data_t *request_data, obs_data_t *response_data, void *priv)
+{
+	UNUSED_PARAMETER(request_data);
+	auto *self = static_cast<MsrController *>(priv);
+	bool ok = self && self->start_streams();
+	obs_data_set_bool(response_data, "success", ok);
+	obs_data_set_bool(response_data, "streaming", self && self->streaming());
+}
+
+void MsrController::ws_stop_stream(obs_data_t *request_data, obs_data_t *response_data, void *priv)
+{
+	UNUSED_PARAMETER(request_data);
+	auto *self = static_cast<MsrController *>(priv);
+	if (self)
+		self->stop_streams();
+	obs_data_set_bool(response_data, "success", true);
+	obs_data_set_bool(response_data, "streaming", false);
+}
+
+void MsrController::ws_toggle_stream(obs_data_t *request_data, obs_data_t *response_data, void *priv)
+{
+	UNUSED_PARAMETER(request_data);
+	auto *self = static_cast<MsrController *>(priv);
+	bool streaming = self && self->toggle_streams();
+	obs_data_set_bool(response_data, "success", true);
+	obs_data_set_bool(response_data, "streaming", streaming);
 }
 
 void MsrController::register_websocket()
@@ -693,5 +939,8 @@ void MsrController::register_websocket()
 	obs_websocket_vendor_register_request(ws_vendor_, "add_chapter", ws_add_chapter, this);
 	obs_websocket_vendor_register_request(ws_vendor_, "get_settings", ws_get_settings, this);
 	obs_websocket_vendor_register_request(ws_vendor_, "configure", ws_configure, this);
+	obs_websocket_vendor_register_request(ws_vendor_, "start_stream", ws_start_stream, this);
+	obs_websocket_vendor_register_request(ws_vendor_, "stop_stream", ws_stop_stream, this);
+	obs_websocket_vendor_register_request(ws_vendor_, "toggle_stream", ws_toggle_stream, this);
 	obs_log(LOG_INFO, "registered obs-websocket vendor obs-multi-source-record");
 }
