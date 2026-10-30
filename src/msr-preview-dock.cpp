@@ -28,12 +28,6 @@ the Free Software Foundation; either version 2 of the License, or
 #include <objc/objc.h>
 #else
 #include <obs-nix-platform.h>
-#ifdef ENABLE_WAYLAND
-#include <QGuiApplication>
-#if QT_VERSION < QT_VERSION_CHECK(6, 9, 0)
-#include <qpa/qplatformnativeinterface.h>
-#endif
-#endif
 #endif
 
 namespace {
@@ -117,30 +111,14 @@ void MsrPreviewDock::create_display()
 #elif defined(__APPLE__)
 	info.window.view = (id)winId();
 #else
-	switch (obs_get_nix_platform()) {
-	case OBS_NIX_PLATFORM_X11_EGL:
-		info.window.id = (uint32_t)winId();
-		info.window.display = obs_get_nix_platform_display();
-		break;
-#ifdef ENABLE_WAYLAND
-	case OBS_NIX_PLATFORM_WAYLAND: {
-#if QT_VERSION < QT_VERSION_CHECK(6, 9, 0)
-		QPlatformNativeInterface *native = QGuiApplication::platformNativeInterface();
-		info.window.display = native->nativeResourceForWindow("surface", windowHandle());
-#else
-		info.window.display = (void *)winId();
-#endif
-		if (!info.window.display) {
-			obs_log(LOG_WARNING, "vertical preview: wayland surface missing");
-			return;
-		}
-		break;
-	}
-#endif
-	default:
+	/* Preview display binding is X11-only here; Wayland needs private Qt
+	 * headers that plugin CI does not ship. Canvas recording still works. */
+	if (obs_get_nix_platform() != OBS_NIX_PLATFORM_X11_EGL) {
 		obs_log(LOG_WARNING, "vertical preview: unsupported nix platform");
 		return;
 	}
+	info.window.id = (uint32_t)winId();
+	info.window.display = obs_get_nix_platform_display();
 #endif
 
 	display_ = obs_display_create(&info, 0xFF4C4C4C);
