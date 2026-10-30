@@ -14,6 +14,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include <obs.h>
 #include <string>
+#include <vector>
 #include <atomic>
 
 /** One RTMP (or compatible) stream to a single destination. Does not touch OBS main stream. */
@@ -39,6 +40,7 @@ private:
 	void teardown();
 	const char *resolve_video_encoder_id() const;
 	static size_t first_mixer_index(uint32_t mask);
+	void clear_audio_encoders();
 
 	MsrStreamDestination dest_;
 	MsrSettings settings_;
@@ -47,7 +49,7 @@ private:
 	video_t *video_output_ = nullptr;
 	audio_t *audio_output_ = nullptr;
 	obs_encoder_t *video_encoder_ = nullptr;
-	obs_encoder_t *audio_encoder_ = nullptr;
+	std::vector<obs_encoder_t *> audio_encoders_;
 	obs_output_t *rtmp_output_ = nullptr;
 	obs_service_t *service_ = nullptr;
 	uint32_t width_ = 0;

@@ -180,17 +180,30 @@ bool MsrStreamSession::setup_encoders_and_output()
 	obs_encoder_set_video(video_encoder_, video_output_);
 	obs_encoder_set_scaled_size(video_encoder_, width_, height_);
 
-	obs_data_t *asettings = obs_data_create();
-	obs_data_set_int(asettings, "bitrate", abr);
-	std::string aenc_name = "msr-stream-aenc-" + tag;
-	const size_t mixer = first_mixer_index(dest_.audio_track_mask);
-	audio_encoder_ = obs_audio_encoder_create("ffmpeg_aac", aenc_name.c_str(), asettings, mixer, nullptr);
-	obs_data_release(asettings);
-	if (!audio_encoder_) {
-		obs_log(LOG_ERROR, "failed to create stream audio encoder for '%s'", dest_.name.c_str());
+	uint32_t mask = dest_.audio_track_mask ? dest_.audio_track_mask : 1u;
+	size_t attached = 0;
+	for (size_t mix = 0; mix < MAX_AUDIO_MIXES; mix++) {
+		if (!(mask & (1u << mix)))
+			continue;
+		obs_data_t *asettings = obs_data_create();
+		obs_data_set_int(asettings, "bitrate", abr);
+		std::string aenc_name = "msr-stream-aenc-" + tag + "-t" + std::to_string(mix + 1);
+		obs_encoder_t *aenc =
+			obs_audio_encoder_create("ffmpeg_aac", aenc_name.c_str(), asettings, mix, nullptr);
+		obs_data_release(asettings);
+		if (!aenc) {
+			obs_log(LOG_ERROR, "failed to create stream audio encoder track %zu for '%s'", mix + 1,
+				dest_.name.c_str());
+			return false;
+		}
+		obs_encoder_set_audio(aenc, audio_output_);
+		audio_encoders_.push_back(aenc);
+		attached++;
+	}
+	if (attached == 0) {
+		obs_log(LOG_ERROR, "stream '%s' audio_track_mask selected no mixer tracks", dest_.name.c_str());
 		return false;
 	}
-	obs_encoder_set_audio(audio_encoder_, audio_output_);
 
 	/* rtmp_output has OBS_OUTPUT_SERVICE — server/key must live on an attached
 	 * rtmp_custom service. Settings alone make obs_output_start fail immediately
@@ -216,8 +229,20 @@ bool MsrStreamSession::setup_encoders_and_output()
 
 	obs_output_set_service(rtmp_output_, service_);
 	obs_output_set_video_encoder(rtmp_output_, video_encoder_);
-	obs_output_set_audio_encoder(rtmp_output_, audio_encoder_, 0);
+	for (size_t i = 0; i < audio_encoders_.size(); i++)
+		obs_output_set_audio_encoder(rtmp_output_, audio_encoders_[i], i);
+	obs_log(LOG_INFO, "stream '%s' audio tracks mask=0x%x (%zu encoder(s))", dest_.name.c_str(), (unsigned)mask,
+		audio_encoders_.size());
 	return true;
+}
+
+void MsrStreamSession::clear_audio_encoders()
+{
+	for (obs_encoder_t *aenc : audio_encoders_) {
+		if (aenc)
+			obs_encoder_release(aenc);
+	}
+	audio_encoders_.clear();
 }
 
 bool MsrStreamSession::start()
@@ -273,10 +298,7 @@ void MsrStreamSession::teardown()
 		obs_service_release(service_);
 		service_ = nullptr;
 	}
-	if (audio_encoder_) {
-		obs_encoder_release(audio_encoder_);
-		audio_encoder_ = nullptr;
-	}
+	clear_audio_encoders();
 	if (video_encoder_) {
 		obs_encoder_release(video_encoder_);
 		video_encoder_ = nullptr;

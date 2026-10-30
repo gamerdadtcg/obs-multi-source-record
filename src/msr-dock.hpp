@@ -37,6 +37,7 @@ struct MsrDestRow {
 	QComboBox *orientation = nullptr;
 	QLineEdit *server = nullptr;
 	QLineEdit *key = nullptr;
+	QCheckBox *track_checks[6] = {};
 };
 
 class MsrDock : public QWidget {

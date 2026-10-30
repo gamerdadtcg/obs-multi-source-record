@@ -790,6 +790,19 @@ void MsrController::ws_get_settings(obs_data_t *request_data, obs_data_t *respon
 		obs_data_set_int(item, "video_bitrate_kbps", d.video_bitrate_kbps);
 		obs_data_set_int(item, "audio_bitrate_kbps", d.audio_bitrate_kbps);
 		obs_data_set_int(item, "audio_track_mask", (long long)d.audio_track_mask);
+		{
+			obs_data_array_t *tracks = obs_data_array_create();
+			for (int ti = 0; ti < 6; ti++) {
+				if (d.audio_track_mask & (1u << ti)) {
+					obs_data_t *tv = obs_data_create();
+					obs_data_set_int(tv, "track", ti + 1);
+					obs_data_array_push_back(tracks, tv);
+					obs_data_release(tv);
+				}
+			}
+			obs_data_set_array(item, "audio_tracks", tracks);
+			obs_data_array_release(tracks);
+		}
 		obs_data_array_push_back(darr, item);
 		obs_data_release(item);
 	}

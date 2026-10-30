@@ -308,15 +308,19 @@ void MsrDock::rebuild_dest_list()
 
 	for (const auto &d : settings.destinations) {
 		auto *row = new QWidget(multistream_box_);
-		auto *hl = new QHBoxLayout(row);
+		auto *vl = new QVBoxLayout(row);
+		vl->setContentsMargins(0, 0, 0, 0);
+		vl->setSpacing(2);
+		auto *top = new QWidget(row);
+		auto *hl = new QHBoxLayout(top);
 		hl->setContentsMargins(0, 0, 0, 0);
 
 		MsrDestRow dr;
-		dr.enabled = new QCheckBox(row);
+		dr.enabled = new QCheckBox(top);
 		dr.enabled->setChecked(d.enabled);
-		dr.name = new QLineEdit(QString::fromStdString(d.name), row);
+		dr.name = new QLineEdit(QString::fromStdString(d.name), top);
 		dr.name->setPlaceholderText(QString::fromUtf8(obs_module_text("DestinationName")));
-		dr.orientation = new QComboBox(row);
+		dr.orientation = new QComboBox(top);
 		dr.orientation->addItem(QString::fromUtf8(obs_module_text("OrientationHorizontal")),
 					(int)MsrOrientation::Horizontal);
 		dr.orientation->addItem(QString::fromUtf8(obs_module_text("OrientationVertical")),
@@ -324,9 +328,9 @@ void MsrDock::rebuild_dest_list()
 		int oi = dr.orientation->findData((int)d.orientation);
 		if (oi >= 0)
 			dr.orientation->setCurrentIndex(oi);
-		dr.server = new QLineEdit(QString::fromStdString(d.server_url), row);
+		dr.server = new QLineEdit(QString::fromStdString(d.server_url), top);
 		dr.server->setPlaceholderText(QString::fromUtf8(obs_module_text("DestinationServer")));
-		dr.key = new QLineEdit(row);
+		dr.key = new QLineEdit(top);
 		dr.key->setEchoMode(QLineEdit::Password);
 		dr.key->setPlaceholderText(QString::fromUtf8(obs_module_text("DestinationKey")));
 		/* Keep existing key unless the user types a replacement. */
@@ -337,6 +341,23 @@ void MsrDock::rebuild_dest_list()
 		hl->addWidget(dr.orientation);
 		hl->addWidget(dr.server, 2);
 		hl->addWidget(dr.key, 1);
+
+		auto *tracks = new QWidget(row);
+		auto *tl = new QHBoxLayout(tracks);
+		tl->setContentsMargins(0, 0, 0, 0);
+		tl->setSpacing(4);
+		tl->addWidget(new QLabel(QString::fromUtf8(obs_module_text("AudioTracks")), tracks));
+		const uint32_t mask = d.audio_track_mask ? d.audio_track_mask : 1u;
+		for (int i = 0; i < 6; i++) {
+			dr.track_checks[i] = new QCheckBox(QString::number(i + 1), tracks);
+			dr.track_checks[i]->setChecked((mask & (1u << i)) != 0);
+			dr.track_checks[i]->setToolTip(QString::fromUtf8(obs_module_text("AudioTrackTooltip")));
+			tl->addWidget(dr.track_checks[i]);
+		}
+		tl->addStretch(1);
+
+		vl->addWidget(top);
+		vl->addWidget(tracks);
 		dest_list_layout_->addWidget(row);
 		dest_rows_.push_back(dr);
 	}
@@ -408,6 +429,12 @@ void MsrDock::apply_to_controller()
 		d.orientation = static_cast<MsrOrientation>(row.orientation->currentData().toInt());
 		d.server_url = row.server->text().trimmed().toStdString();
 		d.stream_key = row.key->text().toStdString();
+		uint32_t mask = 0;
+		for (int i = 0; i < 6; i++) {
+			if (row.track_checks[i] && row.track_checks[i]->isChecked())
+				mask |= (1u << i);
+		}
+		d.audio_track_mask = mask ? mask : 1u;
 		if (!d.name.empty())
 			s.destinations.push_back(d);
 	}

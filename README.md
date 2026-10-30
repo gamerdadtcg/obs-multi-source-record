@@ -104,6 +104,7 @@ Add RTMP/RTMPS destinations that publish the **main (horizontal) canvas** or the
 - Stream keys are **masked** in the dock / `get_settings` and **never logged**
 - Vendor requests: `start_stream`, `stop_stream`, `toggle_stream` (plus `configure` / `get_settings` `destinations` array)
 - Hotkey: **Multi Source Record: Start/Stop Stream**
+- **Audio routing matrix**: per destination, checkboxes for OBS mixer tracks 1–6 (`audio_track_mask`, bit0=track1). Each selected track gets its own AAC encoder on that RTMP output.
 
 For local tests use MediaMTX (`rtmp://127.0.0.1:1935/...`). Do not point agent tests at live Kick/YouTube keys.
 
