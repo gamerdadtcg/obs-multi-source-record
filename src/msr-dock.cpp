@@ -129,6 +129,63 @@ void MsrDock::build_ui()
 	fmt_row->addWidget(container_combo_, 1);
 	root->addLayout(fmt_row);
 
+	auto *opts = new QGroupBox(QString::fromUtf8(obs_module_text("RecordingOptions")), this);
+	auto *opts_l = new QVBoxLayout(opts);
+
+	auto_start_combo_ = new QComboBox(opts);
+	auto_start_combo_->addItem(QString::fromUtf8(obs_module_text("AutoStartOff")), (int)MsrAutoStartTrigger::Off);
+	auto_start_combo_->addItem(QString::fromUtf8(obs_module_text("AutoStartRecord")),
+				   (int)MsrAutoStartTrigger::Record);
+	auto_start_combo_->addItem(QString::fromUtf8(obs_module_text("AutoStartStream")),
+				   (int)MsrAutoStartTrigger::Stream);
+	auto_start_combo_->addItem(QString::fromUtf8(obs_module_text("AutoStartBoth")), (int)MsrAutoStartTrigger::Both);
+	opts_l->addWidget(new QLabel(QString::fromUtf8(obs_module_text("AutoStart")), opts));
+	opts_l->addWidget(auto_start_combo_);
+	auto *as_hint = new QLabel(QString::fromUtf8(obs_module_text("AutoStartHint")), opts);
+	as_hint->setWordWrap(true);
+	opts_l->addWidget(as_hint);
+
+	auto *replay_row = new QHBoxLayout();
+	replay_enabled_ = new QCheckBox(QString::fromUtf8(obs_module_text("ReplayEnabled")), opts);
+	replay_seconds_ = new QSpinBox(opts);
+	replay_seconds_->setRange(5, 300);
+	replay_seconds_->setSuffix(QStringLiteral(" s"));
+	replay_row->addWidget(replay_enabled_);
+	replay_row->addWidget(new QLabel(QString::fromUtf8(obs_module_text("ReplaySeconds")), opts));
+	replay_row->addWidget(replay_seconds_);
+	replay_row->addStretch(1);
+	opts_l->addLayout(replay_row);
+	auto *rb_hint = new QLabel(QString::fromUtf8(obs_module_text("ReplayHint")), opts);
+	rb_hint->setWordWrap(true);
+	opts_l->addWidget(rb_hint);
+
+	split_mode_combo_ = new QComboBox(opts);
+	split_mode_combo_->addItem(QString::fromUtf8(obs_module_text("SplitOff")), (int)MsrSplitMode::Off);
+	split_mode_combo_->addItem(QString::fromUtf8(obs_module_text("SplitByTime")), (int)MsrSplitMode::ByTime);
+	split_mode_combo_->addItem(QString::fromUtf8(obs_module_text("SplitBySize")), (int)MsrSplitMode::BySize);
+	opts_l->addWidget(new QLabel(QString::fromUtf8(obs_module_text("FileSplit")), opts));
+	opts_l->addWidget(split_mode_combo_);
+	connect(split_mode_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+		&MsrDock::on_split_mode_changed);
+
+	auto *split_row = new QHBoxLayout();
+	split_time_label_ = new QLabel(QString::fromUtf8(obs_module_text("SplitTimeMin")), opts);
+	split_time_min_ = new QSpinBox(opts);
+	split_time_min_->setRange(1, 24 * 60);
+	split_time_min_->setSuffix(QStringLiteral(" min"));
+	split_size_label_ = new QLabel(QString::fromUtf8(obs_module_text("SplitSizeMb")), opts);
+	split_size_mb_ = new QSpinBox(opts);
+	split_size_mb_->setRange(50, 100000);
+	split_size_mb_->setSuffix(QStringLiteral(" MB"));
+	split_row->addWidget(split_time_label_);
+	split_row->addWidget(split_time_min_);
+	split_row->addWidget(split_size_label_);
+	split_row->addWidget(split_size_mb_);
+	split_row->addStretch(1);
+	opts_l->addLayout(split_row);
+
+	root->addWidget(opts);
+
 	advanced_box_ = new QGroupBox(QString::fromUtf8(obs_module_text("Advanced")), this);
 	advanced_box_->setCheckable(true);
 	advanced_box_->setChecked(false);
@@ -200,10 +257,13 @@ void MsrDock::build_ui()
 	chapter_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("AddChapter")), this);
 	connect(chapter_btn_, &QPushButton::clicked, this, &MsrDock::on_add_chapter);
 	chapter_btn_->setEnabled(false);
+	replay_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("SaveReplay")), this);
+	connect(replay_btn_, &QPushButton::clicked, this, &MsrDock::on_save_replay);
 	btn_row->addWidget(save_btn);
 	btn_row->addWidget(start_btn_, 1);
 	btn_row->addWidget(pause_btn_);
 	btn_row->addWidget(chapter_btn_);
+	btn_row->addWidget(replay_btn_);
 	root->addLayout(btn_row);
 
 	status_label_ = new QLabel(QString::fromUtf8(obs_module_text("StatusIdle")), this);
@@ -381,6 +441,25 @@ void MsrDock::load_from_controller()
 	audio_bitrate_->setValue(s.audio_bitrate_kbps);
 	vert_w_->setValue(s.vertical_width);
 	vert_h_->setValue(s.vertical_height);
+	if (auto_start_combo_) {
+		int ai = auto_start_combo_->findData((int)s.auto_start);
+		if (ai >= 0)
+			auto_start_combo_->setCurrentIndex(ai);
+	}
+	if (replay_enabled_)
+		replay_enabled_->setChecked(s.replay_enabled);
+	if (replay_seconds_)
+		replay_seconds_->setValue(s.replay_seconds);
+	if (split_mode_combo_) {
+		int si = split_mode_combo_->findData((int)s.split_mode);
+		if (si >= 0)
+			split_mode_combo_->setCurrentIndex(si);
+	}
+	if (split_time_min_)
+		split_time_min_->setValue(s.split_time_min);
+	if (split_size_mb_)
+		split_size_mb_->setValue(s.split_size_mb);
+	on_split_mode_changed(split_mode_combo_ ? split_mode_combo_->currentIndex() : 0);
 	rebuild_source_list();
 	rebuild_dest_list();
 	if (stream_btn_) {
@@ -410,6 +489,18 @@ void MsrDock::apply_to_controller()
 	s.audio_bitrate_kbps = audio_bitrate_->value();
 	s.vertical_width = vert_w_->value();
 	s.vertical_height = vert_h_->value();
+	if (auto_start_combo_)
+		s.auto_start = static_cast<MsrAutoStartTrigger>(auto_start_combo_->currentData().toInt());
+	if (replay_enabled_)
+		s.replay_enabled = replay_enabled_->isChecked();
+	if (replay_seconds_)
+		s.replay_seconds = replay_seconds_->value();
+	if (split_mode_combo_)
+		s.split_mode = static_cast<MsrSplitMode>(split_mode_combo_->currentData().toInt());
+	if (split_time_min_)
+		s.split_time_min = split_time_min_->value();
+	if (split_size_mb_)
+		s.split_size_mb = split_size_mb_->value();
 	s.sources.clear();
 	for (const auto &row : rows_) {
 		MsrSourceConfig cfg;
@@ -541,4 +632,33 @@ void MsrDock::on_start_stop_stream()
 		stream_status_label_->setText(
 			QString::fromUtf8(obs_module_text(streaming ? "StatusStreaming" : "StatusStreamIdle")));
 	}
+}
+
+void MsrDock::on_save_replay()
+{
+	auto *c = MsrController::instance();
+	if (!c)
+		return;
+	apply_to_controller();
+	if (c->save_replays())
+		status_label_->setText(QString::fromUtf8(obs_module_text("StatusReplaySaved")));
+	else
+		status_label_->setText(QString::fromUtf8(obs_module_text("StatusReplayIdle")));
+}
+
+void MsrDock::on_split_mode_changed(int)
+{
+	if (!split_mode_combo_)
+		return;
+	const int mode = split_mode_combo_->currentData().toInt();
+	const bool by_time = mode == (int)MsrSplitMode::ByTime;
+	const bool by_size = mode == (int)MsrSplitMode::BySize;
+	if (split_time_label_)
+		split_time_label_->setVisible(by_time);
+	if (split_time_min_)
+		split_time_min_->setVisible(by_time);
+	if (split_size_label_)
+		split_size_label_->setVisible(by_size);
+	if (split_size_mb_)
+		split_size_mb_->setVisible(by_size);
 }

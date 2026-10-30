@@ -46,6 +46,7 @@ MsrController::~MsrController()
 {
 	unregister_hotkey();
 	stop_streams();
+	stop_replays();
 	stop_all();
 }
 
@@ -135,6 +136,22 @@ void MsrController::load_settings()
 		settings_.vertical_width = (int)obs_data_get_int(data, "vertical_width");
 	if (obs_data_has_user_value(data, "vertical_height"))
 		settings_.vertical_height = (int)obs_data_get_int(data, "vertical_height");
+	settings_.auto_start = parse_auto_start_token(obs_data_get_string(data, "auto_start"),
+						      (int)obs_data_get_int(data, "auto_start_code"));
+	if (obs_data_has_user_value(data, "replay_enabled"))
+		settings_.replay_enabled = obs_data_get_bool(data, "replay_enabled");
+	if (obs_data_has_user_value(data, "replay_seconds"))
+		settings_.replay_seconds = (int)obs_data_get_int(data, "replay_seconds");
+	if (settings_.replay_seconds < 5)
+		settings_.replay_seconds = 5;
+	if (settings_.replay_seconds > 300)
+		settings_.replay_seconds = 300;
+	settings_.split_mode = parse_split_mode_token(obs_data_get_string(data, "split_mode"),
+						      (int)obs_data_get_int(data, "split_mode_code"));
+	if (obs_data_has_user_value(data, "split_time_min"))
+		settings_.split_time_min = (int)obs_data_get_int(data, "split_time_min");
+	if (obs_data_has_user_value(data, "split_size_mb"))
+		settings_.split_size_mb = (int)obs_data_get_int(data, "split_size_mb");
 
 	obs_data_array_t *arr = obs_data_get_array(data, "sources");
 	if (arr) {
@@ -199,6 +216,14 @@ void MsrController::save_settings()
 	obs_data_set_int(data, "audio_bitrate_kbps", settings_.audio_bitrate_kbps);
 	obs_data_set_int(data, "vertical_width", settings_.vertical_width);
 	obs_data_set_int(data, "vertical_height", settings_.vertical_height);
+	obs_data_set_string(data, "auto_start", auto_start_token(settings_.auto_start));
+	obs_data_set_int(data, "auto_start_code", (int)settings_.auto_start);
+	obs_data_set_bool(data, "replay_enabled", settings_.replay_enabled);
+	obs_data_set_int(data, "replay_seconds", settings_.replay_seconds);
+	obs_data_set_string(data, "split_mode", split_mode_token(settings_.split_mode));
+	obs_data_set_int(data, "split_mode_code", (int)settings_.split_mode);
+	obs_data_set_int(data, "split_time_min", settings_.split_time_min);
+	obs_data_set_int(data, "split_size_mb", settings_.split_size_mb);
 
 	obs_data_array_t *arr = obs_data_array_create();
 	for (const auto &cfg : settings_.sources) {
@@ -251,6 +276,7 @@ void MsrController::set_settings(const MsrSettings &s)
 		settings_ = s;
 	}
 	save_settings();
+	sync_replays_to_settings();
 }
 
 bool MsrController::recording() const
@@ -375,6 +401,8 @@ void MsrController::stop_all()
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		to_stop.swap(sessions_);
+		auto_started_from_record_ = false;
+		auto_started_from_stream_ = false;
 	}
 	for (auto &s : to_stop) {
 		if (s)
@@ -556,6 +584,215 @@ bool MsrController::add_chapter(const std::string &name)
 	return ok;
 }
 
+bool MsrController::replaying() const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	for (const auto &s : replay_sessions_) {
+		if (s && s->active())
+			return true;
+	}
+	return false;
+}
+
+bool MsrController::start_replays()
+{
+	stop_replays();
+
+	MsrSettings snap;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		snap = settings_;
+	}
+	if (!snap.replay_enabled) {
+		obs_log(LOG_INFO, "replay buffers not enabled");
+		return false;
+	}
+	if (snap.output_folder.empty()) {
+		obs_log(LOG_ERROR, "output folder is empty (replay)");
+		return false;
+	}
+
+	bool any = false;
+	bool want_vertical = false;
+	std::vector<std::unique_ptr<MsrSession>> started;
+	for (const auto &cfg : snap.sources) {
+		if (!cfg.enabled || cfg.source_name.empty())
+			continue;
+		auto launch = [&](MsrOrientation ori, bool vert_canvas) {
+			auto session = std::make_unique<MsrSession>(cfg.source_name, ori, cfg.extra_audio_source, snap,
+								    vert_canvas, MsrSessionKind::Replay);
+			if (session->start()) {
+				started.push_back(std::move(session));
+				any = true;
+			}
+		};
+		if (cfg.orientation == MsrOrientation::Both) {
+			want_vertical = true;
+			launch(MsrOrientation::Horizontal, false);
+		} else if (cfg.orientation == MsrOrientation::Vertical) {
+			want_vertical = true;
+		} else {
+			launch(MsrOrientation::Horizontal, false);
+		}
+	}
+	if (want_vertical) {
+		auto *vc = MsrVerticalCanvas::instance();
+		if (vc && vc->ensure((uint32_t)snap.vertical_width, (uint32_t)snap.vertical_height)) {
+			auto session = std::make_unique<MsrSession>("MSR Vertical", MsrOrientation::Vertical, "", snap,
+								    true, MsrSessionKind::Replay);
+			if (session->start()) {
+				started.push_back(std::move(session));
+				any = true;
+			}
+		} else {
+			obs_log(LOG_ERROR, "vertical canvas unavailable; skipped vertical replay");
+		}
+	}
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		replay_sessions_ = std::move(started);
+	}
+	if (any)
+		obs_log(LOG_INFO, "replay buffers started");
+	return any;
+}
+
+void MsrController::stop_replays()
+{
+	std::vector<std::unique_ptr<MsrSession>> to_stop;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		to_stop.swap(replay_sessions_);
+	}
+	for (auto &s : to_stop) {
+		if (s)
+			s->stop();
+	}
+}
+
+bool MsrController::save_replays()
+{
+	std::vector<MsrSession *> targets;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		for (const auto &s : replay_sessions_) {
+			if (s && s->active())
+				targets.push_back(s.get());
+		}
+	}
+	if (targets.empty())
+		return false;
+	bool ok = false;
+	for (auto *s : targets) {
+		if (s->save_replay())
+			ok = true;
+	}
+	return ok;
+}
+
+void MsrController::sync_replays_to_settings()
+{
+	MsrSettings snap;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		snap = settings_;
+	}
+	if (snap.replay_enabled) {
+		if (!replaying())
+			start_replays();
+	} else {
+		stop_replays();
+	}
+}
+
+void MsrController::on_obs_recording_started()
+{
+	MsrAutoStartTrigger mode;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		mode = settings_.auto_start;
+	}
+	if (mode != MsrAutoStartTrigger::Record && mode != MsrAutoStartTrigger::Both)
+		return;
+	if (!recording()) {
+		if (!start_all())
+			return;
+		std::lock_guard<std::mutex> lock(mutex_);
+		auto_started_from_record_ = true;
+		obs_log(LOG_INFO, "auto-start: MSR recording started with OBS recording");
+	} else {
+		/* Already running from stream auto-start — also attribute to record (Both). */
+		std::lock_guard<std::mutex> lock(mutex_);
+		if (auto_started_from_stream_)
+			auto_started_from_record_ = true;
+	}
+}
+
+void MsrController::on_obs_recording_stopped()
+{
+	bool should_stop = false;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		if (!auto_started_from_record_)
+			return;
+		auto_started_from_record_ = false;
+		should_stop = !auto_started_from_stream_;
+	}
+	if (should_stop && recording()) {
+		stop_all();
+		obs_log(LOG_INFO, "auto-start: MSR recording stopped with OBS recording");
+	}
+}
+
+void MsrController::on_obs_streaming_started()
+{
+	MsrAutoStartTrigger mode;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		mode = settings_.auto_start;
+	}
+	if (mode != MsrAutoStartTrigger::Stream && mode != MsrAutoStartTrigger::Both)
+		return;
+	if (!recording()) {
+		if (!start_all())
+			return;
+		std::lock_guard<std::mutex> lock(mutex_);
+		auto_started_from_stream_ = true;
+		obs_log(LOG_INFO, "auto-start: MSR recording started with OBS streaming");
+	} else {
+		std::lock_guard<std::mutex> lock(mutex_);
+		if (auto_started_from_record_)
+			auto_started_from_stream_ = true;
+	}
+}
+
+void MsrController::on_obs_streaming_stopped()
+{
+	bool should_stop = false;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		if (!auto_started_from_stream_)
+			return;
+		auto_started_from_stream_ = false;
+		should_stop = !auto_started_from_record_;
+	}
+	if (should_stop && recording()) {
+		stop_all();
+		obs_log(LOG_INFO, "auto-start: MSR recording stopped with OBS streaming");
+	}
+}
+
+void MsrController::replay_hotkey_pressed(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
+{
+	UNUSED_PARAMETER(id);
+	UNUSED_PARAMETER(hotkey);
+	if (!pressed)
+		return;
+	auto *self = static_cast<MsrController *>(data);
+	if (self)
+		self->save_replays();
+}
+
 void MsrController::hotkey_pressed(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
 {
 	UNUSED_PARAMETER(id);
@@ -614,6 +851,14 @@ void MsrController::register_hotkey()
 		stream_hotkey_id_ = obs_hotkey_register_frontend("msr.stream", "Multi Source Record: Start/Stop Stream",
 								 stream_hotkey_pressed, this);
 	}
+	if (replay_hotkey_id_ == OBS_INVALID_HOTKEY_ID) {
+		replay_hotkey_id_ = obs_hotkey_register_frontend("msr.save_replay", "Multi Source Record: Save Replay",
+								 replay_hotkey_pressed, this);
+	}
+	if (chapter_hotkey_id_ == OBS_INVALID_HOTKEY_ID) {
+		chapter_hotkey_id_ = obs_hotkey_register_frontend("msr.chapter", "Multi Source Record: Add Chapter",
+								  chapter_hotkey_pressed, this);
+	}
 }
 
 void MsrController::unregister_hotkey()
@@ -633,6 +878,10 @@ void MsrController::unregister_hotkey()
 	if (stream_hotkey_id_ != OBS_INVALID_HOTKEY_ID) {
 		obs_hotkey_unregister(stream_hotkey_id_);
 		stream_hotkey_id_ = OBS_INVALID_HOTKEY_ID;
+	}
+	if (replay_hotkey_id_ != OBS_INVALID_HOTKEY_ID) {
+		obs_hotkey_unregister(replay_hotkey_id_);
+		replay_hotkey_id_ = OBS_INVALID_HOTKEY_ID;
 	}
 }
 
@@ -719,10 +968,12 @@ void MsrController::ws_status(obs_data_t *request_data, obs_data_t *response_dat
 	bool rec = self && self->recording();
 	bool paused = self && self->paused();
 	bool streaming = self && self->streaming();
+	bool replaying = self && self->replaying();
 	obs_data_set_bool(response_data, "success", true);
 	obs_data_set_bool(response_data, "recording", rec);
 	obs_data_set_bool(response_data, "paused", paused);
 	obs_data_set_bool(response_data, "streaming", streaming);
+	obs_data_set_bool(response_data, "replaying", replaying);
 	obs_data_array_t *arr = obs_data_array_create();
 	if (self) {
 		for (const auto &path : self->active_outputs()) {
@@ -765,6 +1016,12 @@ void MsrController::ws_get_settings(obs_data_t *request_data, obs_data_t *respon
 	obs_data_set_int(response_data, "audio_bitrate_kbps", s.audio_bitrate_kbps);
 	obs_data_set_int(response_data, "vertical_width", s.vertical_width);
 	obs_data_set_int(response_data, "vertical_height", s.vertical_height);
+	obs_data_set_string(response_data, "auto_start", auto_start_token(s.auto_start));
+	obs_data_set_bool(response_data, "replay_enabled", s.replay_enabled);
+	obs_data_set_int(response_data, "replay_seconds", s.replay_seconds);
+	obs_data_set_string(response_data, "split_mode", split_mode_token(s.split_mode));
+	obs_data_set_int(response_data, "split_time_min", s.split_time_min);
+	obs_data_set_int(response_data, "split_size_mb", s.split_size_mb);
 	obs_data_array_t *arr = obs_data_array_create();
 	for (const auto &cfg : s.sources) {
 		obs_data_t *item = obs_data_create();
@@ -843,6 +1100,24 @@ void MsrController::ws_configure(obs_data_t *request_data, obs_data_t *response_
 		s.vertical_width = (int)obs_data_get_int(request_data, "vertical_width");
 	if (obs_data_has_user_value(request_data, "vertical_height"))
 		s.vertical_height = (int)obs_data_get_int(request_data, "vertical_height");
+	if (obs_data_has_user_value(request_data, "auto_start"))
+		s.auto_start = parse_auto_start_token(obs_data_get_string(request_data, "auto_start"),
+						      (int)obs_data_get_int(request_data, "auto_start"));
+	if (obs_data_has_user_value(request_data, "replay_enabled"))
+		s.replay_enabled = obs_data_get_bool(request_data, "replay_enabled");
+	if (obs_data_has_user_value(request_data, "replay_seconds"))
+		s.replay_seconds = (int)obs_data_get_int(request_data, "replay_seconds");
+	if (s.replay_seconds < 5)
+		s.replay_seconds = 5;
+	if (s.replay_seconds > 300)
+		s.replay_seconds = 300;
+	if (obs_data_has_user_value(request_data, "split_mode"))
+		s.split_mode = parse_split_mode_token(obs_data_get_string(request_data, "split_mode"),
+						      (int)obs_data_get_int(request_data, "split_mode"));
+	if (obs_data_has_user_value(request_data, "split_time_min"))
+		s.split_time_min = (int)obs_data_get_int(request_data, "split_time_min");
+	if (obs_data_has_user_value(request_data, "split_size_mb"))
+		s.split_size_mb = (int)obs_data_get_int(request_data, "split_size_mb");
 
 	obs_data_array_t *arr = obs_data_get_array(request_data, "sources");
 	if (arr) {
@@ -911,6 +1186,7 @@ void MsrController::ws_configure(obs_data_t *request_data, obs_data_t *response_
 	obs_data_set_bool(response_data, "success", true);
 	obs_data_set_bool(response_data, "recording", self->recording());
 	obs_data_set_bool(response_data, "streaming", self->streaming());
+	obs_data_set_bool(response_data, "replaying", self->replaying());
 }
 
 void MsrController::ws_start_stream(obs_data_t *request_data, obs_data_t *response_data, void *priv)
@@ -941,6 +1217,41 @@ void MsrController::ws_toggle_stream(obs_data_t *request_data, obs_data_t *respo
 	obs_data_set_bool(response_data, "streaming", streaming);
 }
 
+void MsrController::ws_save_replay(obs_data_t *request_data, obs_data_t *response_data, void *priv)
+{
+	UNUSED_PARAMETER(request_data);
+	auto *self = static_cast<MsrController *>(priv);
+	bool ok = self && self->save_replays();
+	obs_data_set_bool(response_data, "success", ok);
+	obs_data_set_bool(response_data, "replaying", self && self->replaying());
+}
+
+void MsrController::ws_start_replay(obs_data_t *request_data, obs_data_t *response_data, void *priv)
+{
+	UNUSED_PARAMETER(request_data);
+	auto *self = static_cast<MsrController *>(priv);
+	if (self) {
+		MsrSettings s = self->settings();
+		s.replay_enabled = true;
+		self->set_settings(s);
+	}
+	obs_data_set_bool(response_data, "success", self && self->replaying());
+	obs_data_set_bool(response_data, "replaying", self && self->replaying());
+}
+
+void MsrController::ws_stop_replay(obs_data_t *request_data, obs_data_t *response_data, void *priv)
+{
+	UNUSED_PARAMETER(request_data);
+	auto *self = static_cast<MsrController *>(priv);
+	if (self) {
+		MsrSettings s = self->settings();
+		s.replay_enabled = false;
+		self->set_settings(s);
+	}
+	obs_data_set_bool(response_data, "success", true);
+	obs_data_set_bool(response_data, "replaying", false);
+}
+
 void MsrController::register_websocket()
 {
 	ws_vendor_ = obs_websocket_register_vendor("obs-multi-source-record");
@@ -961,5 +1272,8 @@ void MsrController::register_websocket()
 	obs_websocket_vendor_register_request(ws_vendor_, "start_stream", ws_start_stream, this);
 	obs_websocket_vendor_register_request(ws_vendor_, "stop_stream", ws_stop_stream, this);
 	obs_websocket_vendor_register_request(ws_vendor_, "toggle_stream", ws_toggle_stream, this);
+	obs_websocket_vendor_register_request(ws_vendor_, "save_replay", ws_save_replay, this);
+	obs_websocket_vendor_register_request(ws_vendor_, "start_replay", ws_start_replay, this);
+	obs_websocket_vendor_register_request(ws_vendor_, "stop_replay", ws_stop_replay, this);
 	obs_log(LOG_INFO, "registered obs-websocket vendor obs-multi-source-record");
 }

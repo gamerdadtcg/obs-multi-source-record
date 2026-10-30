@@ -43,6 +43,19 @@ public:
 	bool paused() const;
 	bool add_chapter(const std::string &name);
 
+	bool start_replays();
+	void stop_replays();
+	bool save_replays();
+	bool replaying() const;
+	/** Apply replay_enabled from current settings (start or stop buffers). */
+	void sync_replays_to_settings();
+
+	/** OBS frontend auto-start hooks (never starts OBS streaming itself). */
+	void on_obs_recording_started();
+	void on_obs_recording_stopped();
+	void on_obs_streaming_started();
+	void on_obs_streaming_stopped();
+
 	bool start_streams();
 	void stop_streams();
 	bool toggle_streams();
@@ -66,6 +79,7 @@ private:
 	static void pause_hotkey_pressed(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed);
 	static void chapter_hotkey_pressed(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed);
 	static void stream_hotkey_pressed(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed);
+	static void replay_hotkey_pressed(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed);
 
 	static void ws_start(obs_data_t *request_data, obs_data_t *response_data, void *priv);
 	static void ws_stop(obs_data_t *request_data, obs_data_t *response_data, void *priv);
@@ -80,6 +94,9 @@ private:
 	static void ws_start_stream(obs_data_t *request_data, obs_data_t *response_data, void *priv);
 	static void ws_stop_stream(obs_data_t *request_data, obs_data_t *response_data, void *priv);
 	static void ws_toggle_stream(obs_data_t *request_data, obs_data_t *response_data, void *priv);
+	static void ws_save_replay(obs_data_t *request_data, obs_data_t *response_data, void *priv);
+	static void ws_start_replay(obs_data_t *request_data, obs_data_t *response_data, void *priv);
+	static void ws_stop_replay(obs_data_t *request_data, obs_data_t *response_data, void *priv);
 
 	std::string settings_path() const;
 	void notify_state();
@@ -87,11 +104,15 @@ private:
 	mutable std::mutex mutex_;
 	MsrSettings settings_;
 	std::vector<std::unique_ptr<MsrSession>> sessions_;
+	std::vector<std::unique_ptr<MsrSession>> replay_sessions_;
 	std::vector<std::unique_ptr<MsrStreamSession>> stream_sessions_;
 	obs_hotkey_id hotkey_id_ = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id pause_hotkey_id_ = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id chapter_hotkey_id_ = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id stream_hotkey_id_ = OBS_INVALID_HOTKEY_ID;
+	obs_hotkey_id replay_hotkey_id_ = OBS_INVALID_HOTKEY_ID;
+	bool auto_started_from_record_ = false;
+	bool auto_started_from_stream_ = false;
 	void *ws_vendor_ = nullptr;
 	StateCallback state_cb_;
 	static MsrController *instance_;

@@ -40,19 +40,45 @@ static MsrPreviewDock *preview_dock = nullptr;
 
 static void frontend_event(enum obs_frontend_event event, void *)
 {
+	auto *c = MsrController::instance();
+	if (!c)
+		return;
+
 	if (event == OBS_FRONTEND_EVENT_PROFILE_CHANGED || event == OBS_FRONTEND_EVENT_FINISHED_LOADING) {
-		if (auto *c = MsrController::instance()) {
-			c->load_settings();
-			if (dock_widget)
-				QMetaObject::invokeMethod(dock_widget, "refresh_sources", Qt::QueuedConnection);
-			if (auto *vc = MsrVerticalCanvas::instance()) {
-				auto s = c->settings();
-				vc->ensure((uint32_t)s.vertical_width, (uint32_t)s.vertical_height);
-			}
+		c->load_settings();
+		if (dock_widget)
+			QMetaObject::invokeMethod(dock_widget, "refresh_sources", Qt::QueuedConnection);
+		if (auto *vc = MsrVerticalCanvas::instance()) {
+			auto s = c->settings();
+			vc->ensure((uint32_t)s.vertical_width, (uint32_t)s.vertical_height);
 		}
+		/* Start replay buffers if enabled in saved settings (safe; no OBS stream). */
+		c->sync_replays_to_settings();
+	} else if (event == OBS_FRONTEND_EVENT_RECORDING_STARTED) {
+		c->on_obs_recording_started();
+		if (dock_widget)
+			QMetaObject::invokeMethod(dock_widget, "update_recording_state", Qt::QueuedConnection,
+						  Q_ARG(bool, c->recording()));
+	} else if (event == OBS_FRONTEND_EVENT_RECORDING_STOPPED) {
+		c->on_obs_recording_stopped();
+		if (dock_widget)
+			QMetaObject::invokeMethod(dock_widget, "update_recording_state", Qt::QueuedConnection,
+						  Q_ARG(bool, c->recording()));
+	} else if (event == OBS_FRONTEND_EVENT_STREAMING_STARTED) {
+		/* Follow OBS stream start for auto-start only — never call StartStream ourselves. */
+		c->on_obs_streaming_started();
+		if (dock_widget)
+			QMetaObject::invokeMethod(dock_widget, "update_recording_state", Qt::QueuedConnection,
+						  Q_ARG(bool, c->recording()));
+	} else if (event == OBS_FRONTEND_EVENT_STREAMING_STOPPED) {
+		c->on_obs_streaming_stopped();
+		if (dock_widget)
+			QMetaObject::invokeMethod(dock_widget, "update_recording_state", Qt::QueuedConnection,
+						  Q_ARG(bool, c->recording()));
 	} else if (event == OBS_FRONTEND_EVENT_EXIT || event == OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN) {
-		if (auto *c = MsrController::instance())
-			c->stop_all();
+		c->stop_replays();
+		c->stop_streams();
+		c->stop_all();
 	}
 }
 
@@ -80,8 +106,10 @@ bool obs_module_load(void)
 
 void obs_module_post_load(void)
 {
-	if (auto *c = MsrController::instance())
+	if (auto *c = MsrController::instance()) {
 		c->register_websocket();
+		c->sync_replays_to_settings();
+	}
 }
 
 void obs_module_unload(void)

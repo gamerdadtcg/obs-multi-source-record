@@ -15,6 +15,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <obs-module.h>
 #include <callback/calldata.h>
 #include <callback/proc.h>
+#include <callback/signal.h>
 
 #include <util/platform.h>
 #include <graphics/vec2.h>
@@ -77,12 +78,13 @@ void ensure_directory(char *path)
 } // namespace
 
 MsrSession::MsrSession(std::string source_name, MsrOrientation orientation, std::string extra_audio,
-		       const MsrSettings &settings, bool use_vertical_canvas)
+		       const MsrSettings &settings, bool use_vertical_canvas, MsrSessionKind kind)
 	: source_name_(std::move(source_name)),
 	  orientation_(orientation),
 	  extra_audio_name_(std::move(extra_audio)),
 	  settings_(settings),
-	  use_vertical_canvas_(use_vertical_canvas)
+	  use_vertical_canvas_(use_vertical_canvas),
+	  kind_(kind)
 {
 }
 
@@ -483,22 +485,75 @@ bool MsrSession::setup_encoders_and_output()
 	}
 	obs_encoder_set_audio(audio_encoder_, audio_output_);
 
-	output_path_ = build_output_path();
-	std::vector<char> path_buf(output_path_.begin(), output_path_.end());
-	path_buf.push_back('\0');
-	ensure_directory(path_buf.data());
-
-	obs_data_t *osettings = obs_data_create();
-	obs_data_set_string(osettings, "path", output_path_.c_str());
 	const char *ext = (settings_.container == "mp4") ? "mp4" : "mkv";
-	obs_data_set_string(osettings, "extension", ext);
-
 	std::string out_name = "msr-out-" + sanitize_name(source_name_) + "-" + orientation_token(orientation_);
-	file_output_ = obs_output_create("ffmpeg_muxer", out_name.c_str(), osettings, nullptr);
-	obs_data_release(osettings);
-	if (!file_output_) {
-		obs_log(LOG_ERROR, "failed to create file output");
-		return false;
+	obs_data_t *osettings = obs_data_create();
+
+	if (kind_ == MsrSessionKind::Replay) {
+		std::string dir = settings_.output_folder;
+		if (dir.empty())
+			dir = ".";
+		std::vector<char> dir_buf(dir.begin(), dir.end());
+		dir_buf.push_back('\0');
+		os_mkdirs(dir_buf.data());
+		std::string fmt = sanitize_name(source_name_) + "_" + orientation_token(orientation_) +
+				  "_replay_%CCYY-%MM-%DD_%hh-%mm-%ss";
+		int rb_sec = settings_.replay_seconds > 0 ? settings_.replay_seconds : 30;
+		/* Cap RAM: allow ~2x bitrate-ish MB as soft max (0 = time-only). */
+		int rb_mb = (settings_.video_bitrate_kbps * rb_sec) / (8 * 1024);
+		if (rb_mb < 50)
+			rb_mb = 50;
+		if (rb_mb > 2048)
+			rb_mb = 2048;
+		obs_data_set_string(osettings, "directory", dir.c_str());
+		obs_data_set_string(osettings, "format", fmt.c_str());
+		obs_data_set_string(osettings, "extension", ext);
+		obs_data_set_bool(osettings, "allow_spaces", false);
+		obs_data_set_int(osettings, "max_time_sec", rb_sec);
+		obs_data_set_int(osettings, "max_size_mb", rb_mb);
+		out_name = "msr-replay-" + sanitize_name(source_name_) + "-" + orientation_token(orientation_);
+		file_output_ = obs_output_create("replay_buffer", out_name.c_str(), osettings, nullptr);
+		obs_data_release(osettings);
+		if (!file_output_) {
+			obs_log(LOG_ERROR, "failed to create replay_buffer output");
+			return false;
+		}
+	} else {
+		output_path_ = build_output_path();
+		base_output_path_ = output_path_;
+		split_parts_.clear();
+		split_parts_.push_back(output_path_);
+		part_start_sec_.clear();
+		part_start_sec_.push_back(0.0);
+		current_part_index_ = 0;
+		std::vector<char> path_buf(output_path_.begin(), output_path_.end());
+		path_buf.push_back('\0');
+		ensure_directory(path_buf.data());
+
+		obs_data_set_string(osettings, "path", output_path_.c_str());
+		obs_data_set_string(osettings, "extension", ext);
+		if (settings_.split_mode == MsrSplitMode::ByTime) {
+			int sec = settings_.split_time_min > 0 ? settings_.split_time_min * 60 : 1800;
+			obs_data_set_bool(osettings, "split_file", true);
+			obs_data_set_int(osettings, "max_time_sec", sec);
+			obs_data_set_int(osettings, "max_size_mb", 0);
+		} else if (settings_.split_mode == MsrSplitMode::BySize) {
+			int mb = settings_.split_size_mb > 0 ? settings_.split_size_mb : 1024;
+			obs_data_set_bool(osettings, "split_file", true);
+			obs_data_set_int(osettings, "max_size_mb", mb);
+			obs_data_set_int(osettings, "max_time_sec", 0);
+		} else {
+			obs_data_set_bool(osettings, "split_file", false);
+			obs_data_set_int(osettings, "max_time_sec", 0);
+			obs_data_set_int(osettings, "max_size_mb", 0);
+		}
+		file_output_ = obs_output_create("ffmpeg_muxer", out_name.c_str(), osettings, nullptr);
+		obs_data_release(osettings);
+		if (!file_output_) {
+			obs_log(LOG_ERROR, "failed to create file output");
+			return false;
+		}
+		connect_file_changed_signal();
 	}
 
 	obs_output_set_video_encoder(file_output_, video_encoder_);
@@ -535,8 +590,13 @@ bool MsrSession::start()
 	chapters_.clear();
 	start_ns_ = os_gettime_ns();
 	active_.store(true);
-	obs_log(LOG_INFO, "recording '%s' (%s) -> %s", source_name_.c_str(), orientation_token(orientation_),
-		output_path_.c_str());
+	if (kind_ == MsrSessionKind::Replay) {
+		obs_log(LOG_INFO, "replay buffer '%s' (%s) %ds", source_name_.c_str(), orientation_token(orientation_),
+			settings_.replay_seconds > 0 ? settings_.replay_seconds : 30);
+	} else {
+		obs_log(LOG_INFO, "recording '%s' (%s) -> %s%s", source_name_.c_str(), orientation_token(orientation_),
+			output_path_.c_str(), settings_.split_mode != MsrSplitMode::Off ? " [split]" : "");
+	}
 	return true;
 }
 
@@ -549,7 +609,7 @@ void MsrSession::stop()
 		return;
 	}
 
-	if (!chapters_.empty())
+	if (kind_ == MsrSessionKind::Record && !chapters_.empty())
 		write_chapters_sidecar();
 
 	if (file_output_ && obs_output_active(file_output_))
@@ -663,9 +723,11 @@ double MsrSession::media_time_sec() const
 
 std::string MsrSession::chapters_path() const
 {
-	if (output_path_.empty())
+	/* Always next to the first part so one sidecar covers the whole split set. */
+	const std::string &src = !base_output_path_.empty() ? base_output_path_ : output_path_;
+	if (src.empty())
 		return {};
-	std::string p = output_path_;
+	std::string p = src;
 	auto dot = p.find_last_of('.');
 	if (dot != std::string::npos)
 		p = p.substr(0, dot);
@@ -695,13 +757,32 @@ void MsrSession::write_chapters_sidecar() const
 
 	obs_data_t *root = obs_data_create();
 	obs_data_set_string(root, "output", output_path_.c_str());
+	obs_data_set_string(root, "base_output", base_output_path_.c_str());
 	obs_data_set_string(root, "source", source_name_.c_str());
 	obs_data_set_string(root, "orientation", orientation_token(orientation_));
+	obs_data_set_string(root, "split_mode", split_mode_token(settings_.split_mode));
+	obs_data_set_int(root, "current_part", current_part_index_);
+	{
+		obs_data_array_t *parts = obs_data_array_create();
+		for (size_t i = 0; i < split_parts_.size(); i++) {
+			obs_data_t *pitem = obs_data_create();
+			obs_data_set_string(pitem, "path", split_parts_[i].c_str());
+			obs_data_set_int(pitem, "index", (int)i);
+			if (i < part_start_sec_.size())
+				obs_data_set_double(pitem, "start_sec", part_start_sec_[i]);
+			obs_data_array_push_back(parts, pitem);
+			obs_data_release(pitem);
+		}
+		obs_data_set_array(root, "parts", parts);
+		obs_data_array_release(parts);
+	}
 	obs_data_array_t *arr = obs_data_array_create();
 	for (const auto &ch : chapters_) {
 		obs_data_t *item = obs_data_create();
 		obs_data_set_string(item, "name", ch.name.c_str());
 		obs_data_set_double(item, "time_sec", ch.time_sec);
+		obs_data_set_int(item, "part_index", ch.part_index);
+		obs_data_set_double(item, "time_in_part_sec", ch.time_in_part_sec);
 		obs_data_array_push_back(arr, item);
 		obs_data_release(item);
 	}
@@ -716,7 +797,7 @@ void MsrSession::write_chapters_sidecar() const
 
 bool MsrSession::add_chapter(const std::string &name)
 {
-	if (!active_.load() || paused_.load())
+	if (kind_ != MsrSessionKind::Record || !active_.load() || paused_.load())
 		return false;
 
 	std::string label = name;
@@ -726,6 +807,13 @@ bool MsrSession::add_chapter(const std::string &name)
 	ChapterMark mark;
 	mark.name = label;
 	mark.time_sec = media_time_sec();
+	mark.part_index = current_part_index_;
+	const double part_start = (current_part_index_ >= 0 && (size_t)current_part_index_ < part_start_sec_.size())
+					  ? part_start_sec_[(size_t)current_part_index_]
+					  : 0.0;
+	mark.time_in_part_sec = mark.time_sec - part_start;
+	if (mark.time_in_part_sec < 0.0)
+		mark.time_in_part_sec = 0.0;
 	chapters_.push_back(mark);
 
 	const bool native = try_native_add_chapter(label);
@@ -733,4 +821,58 @@ bool MsrSession::add_chapter(const std::string &name)
 	obs_log(LOG_INFO, "chapter '%s' at %.3fs on '%s' (%s)%s", label.c_str(), mark.time_sec, source_name_.c_str(),
 		orientation_token(orientation_), native ? " [native]" : " [sidecar]");
 	return true;
+}
+
+void MsrSession::connect_file_changed_signal()
+{
+	if (!file_output_)
+		return;
+	signal_handler_t *sh = obs_output_get_signal_handler(file_output_);
+	if (!sh)
+		return;
+	signal_handler_connect(sh, "file_changed", file_changed_signal, this);
+}
+
+void MsrSession::file_changed_signal(void *data, calldata_t *cd)
+{
+	auto *self = static_cast<MsrSession *>(data);
+	if (!self || !cd)
+		return;
+	const char *next = calldata_string(cd, "next_file");
+	self->on_file_split(next);
+}
+
+void MsrSession::on_file_split(const char *next_file)
+{
+	if (!next_file || !*next_file)
+		return;
+	const double t = media_time_sec();
+	output_path_ = next_file;
+	split_parts_.push_back(output_path_);
+	part_start_sec_.push_back(t);
+	current_part_index_ = (int)split_parts_.size() - 1;
+	obs_log(LOG_INFO, "split '%s' (%s) -> part %d %s @ %.3fs", source_name_.c_str(),
+		orientation_token(orientation_), current_part_index_, output_path_.c_str(), t);
+	if (!chapters_.empty())
+		write_chapters_sidecar();
+}
+
+bool MsrSession::save_replay()
+{
+	if (kind_ != MsrSessionKind::Replay || !active_.load() || !file_output_)
+		return false;
+	proc_handler_t *ph = obs_output_get_proc_handler(file_output_);
+	if (!ph)
+		return false;
+	calldata_t cd;
+	calldata_init(&cd);
+	const bool ok = proc_handler_call(ph, "save", &cd);
+	calldata_free(&cd);
+	if (ok)
+		obs_log(LOG_INFO, "save replay requested for '%s' (%s)", source_name_.c_str(),
+			orientation_token(orientation_));
+	else
+		obs_log(LOG_WARNING, "save replay failed for '%s' (%s)", source_name_.c_str(),
+			orientation_token(orientation_));
+	return ok;
 }

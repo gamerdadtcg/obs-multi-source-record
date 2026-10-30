@@ -19,10 +19,16 @@ the Free Software Foundation; either version 2 of the License, or
 #include <vector>
 #include <cstdint>
 
+enum class MsrSessionKind {
+	Record = 0,
+	Replay = 1,
+};
+
 class MsrSession {
 public:
 	MsrSession(std::string source_name, MsrOrientation orientation, std::string extra_audio,
-		   const MsrSettings &settings, bool use_vertical_canvas = false);
+		   const MsrSettings &settings, bool use_vertical_canvas = false,
+		   MsrSessionKind kind = MsrSessionKind::Record);
 	~MsrSession();
 
 	MsrSession(const MsrSession &) = delete;
@@ -35,9 +41,11 @@ public:
 	bool resume();
 	bool paused() const { return paused_.load(); }
 	bool add_chapter(const std::string &name);
+	bool save_replay();
 
 	const std::string &source_name() const { return source_name_; }
 	MsrOrientation orientation() const { return orientation_; }
+	MsrSessionKind kind() const { return kind_; }
 	const std::string &output_path() const { return output_path_; }
 	std::string chapters_path() const;
 
@@ -181,13 +189,21 @@ private:
 	double media_time_sec() const;
 	void write_chapters_sidecar() const;
 	bool try_native_add_chapter(const std::string &name);
+	void connect_file_changed_signal();
+	void on_file_split(const char *next_file);
+	static void file_changed_signal(void *data, calldata_t *cd);
 
 	std::string source_name_;
 	MsrOrientation orientation_;
 	std::string extra_audio_name_;
 	MsrSettings settings_;
 	bool use_vertical_canvas_ = false;
+	MsrSessionKind kind_ = MsrSessionKind::Record;
 	std::string output_path_;
+	std::string base_output_path_;
+	std::vector<std::string> split_parts_;
+	std::vector<double> part_start_sec_;
+	int current_part_index_ = 0;
 
 	obs_weak_source_t *weak_source_ = nullptr;
 	obs_weak_source_t *weak_extra_audio_ = nullptr;
@@ -213,6 +229,8 @@ private:
 	struct ChapterMark {
 		std::string name;
 		double time_sec = 0.0;
+		int part_index = 0;
+		double time_in_part_sec = 0.0;
 	};
 	std::vector<ChapterMark> chapters_;
 

@@ -55,7 +55,9 @@ public slots:
 	void on_save();
 	void on_start_stop_stream();
 	void on_add_destination();
+	void on_save_replay();
 	void update_recording_state(bool recording);
+	void on_split_mode_changed(int index);
 
 private:
 	void build_ui();
@@ -78,9 +80,18 @@ private:
 	QSpinBox *audio_bitrate_ = nullptr;
 	QSpinBox *vert_w_ = nullptr;
 	QSpinBox *vert_h_ = nullptr;
+	QComboBox *auto_start_combo_ = nullptr;
+	QCheckBox *replay_enabled_ = nullptr;
+	QSpinBox *replay_seconds_ = nullptr;
+	QComboBox *split_mode_combo_ = nullptr;
+	QSpinBox *split_time_min_ = nullptr;
+	QSpinBox *split_size_mb_ = nullptr;
+	QLabel *split_time_label_ = nullptr;
+	QLabel *split_size_label_ = nullptr;
 	QPushButton *start_btn_ = nullptr;
 	QPushButton *pause_btn_ = nullptr;
 	QPushButton *chapter_btn_ = nullptr;
+	QPushButton *replay_btn_ = nullptr;
 	QPushButton *stream_btn_ = nullptr;
 	QLabel *status_label_ = nullptr;
 	QLabel *stream_status_label_ = nullptr;

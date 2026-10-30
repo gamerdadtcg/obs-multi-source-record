@@ -14,7 +14,10 @@ A simpler alternative to the classic Source Record filter. Pick the sources you 
 - Container: `mkv` (default) or `mp4`
 - Encoder: Auto (NVENC → AMF → QSV → x264), bitrate in Advanced
 - One master Start / Stop
-- OBS hotkey: **Multi Source Record: Start/Stop**
+- **Auto-start** (dock toggle, OFF by default): follow OBS main recording and/or streaming start/stop
+- **Replay buffer** per source (configurable length, default 30s) with one-press Save Replay
+- **File split** by time (minutes) or size (MB) via ffmpeg_muxer, with a chapters sidecar that spans parts
+- OBS hotkeys: Start/Stop, Pause/Resume, Add Chapter, Save Replay, Start/Stop Stream
 - obs-websocket vendor requests for Stream Deck
 - Settings saved per OBS profile
 
@@ -89,12 +92,36 @@ Tag a version like `1.0.0` on `main`. The Push workflow creates a **draft** GitH
 
 **Settings → Hotkeys → Multi Source Record: Add Chapter** — drops a chapter marker on every active output at the same time.
 
-The dock has **Pause** / **Resume** and **Chapter** buttons next to Start/Stop. Pause only applies while recording. Chapter writes a `.chapters.json` sidecar next to each file and calls the output's native `add_chapter` when supported (Hybrid MP4 / OBS 30.2+).
+**Settings → Hotkeys → Multi Source Record: Save Replay** — saves every active per-source replay buffer in one press.
+
+The dock has **Pause** / **Resume**, **Chapter**, and **Save Replay** next to Start/Stop. Pause only applies while recording. Chapter writes a `.chapters.json` sidecar next to each file (and across split parts) and calls the output's native `add_chapter` when supported (Hybrid MP4 / OBS 30.2+).
 
 ### Vertical canvas
 
 Vertical (and the vertical half of Both) records the shared **MSR Vertical** canvas once — not a per-source center crop. The plugin creates that canvas (default scene named **Vertical**) at the resolution in Advanced (default **1080×1920**). Compose your vertical layout in that canvas’s scenes; open **View → Docks → MSR Vertical Preview** to see it. Horizontal recording is unchanged (one file per enabled source).
 
+
+
+### Auto-start
+
+In **Recording options**, set **Auto-start with OBS** to Off (default), When main recording starts, When streaming starts, or both. When enabled, MSR recording starts/stops in lockstep with those OBS events. MSR never starts OBS streaming itself — it only reacts when you (or OBS) already started streaming/recording.
+
+### Replay buffer
+
+Enable **Enable replay buffer** and set the length (5–300 seconds, default 30). Each enabled MSR source (and the vertical canvas when used) gets its own OBS `replay_buffer` session. Buffers run **while enabled**, either alone or alongside MSR recording — they are independent of the Start recording button.
+
+Save every active buffer at once with:
+
+- Dock **Save Replay**
+- Hotkey **Multi Source Record: Save Replay**
+- Stream Deck **Multi Source Record Save Replay**
+- Websocket vendor `save_replay` (also `start_replay` / `stop_replay` to toggle the feature)
+
+Saved clips use names like `{source}_{orientation}_replay_YYYY-MM-DD_hh-mm-ss`.
+
+### File split
+
+Under **File split**, choose Off, By time (minutes per file), or By size (MB per file). Uses the ffmpeg_muxer `split_file` / `max_time_sec` / `max_size_mb` settings. OBS names follow-on parts automatically (same stem with a numeric suffix). The `.chapters.json` sidecar stays next to the **first** part and lists every part path plus each chapter’s absolute time and time-within-part.
 
 ## Multistream destinations
 
@@ -124,8 +151,8 @@ For local tests use MediaMTX (`rtmp://127.0.0.1:1935/...`). Do not point agent t
    ```
 
 4. Restart Stream Deck.
-5. Add **Multi Source Record Toggle**, **Pause**, and/or **Chapter**. Set host/port/password to match **OBS → Tools → WebSocket Server Settings**.
-6. Toggle: idle = not recording; red = recording. Pause: recording vs paused. Chapter: marks all active outputs.
+5. Add **Multi Source Record Toggle**, **Pause**, **Chapter**, and/or **Save Replay**. Set host/port/password to match **OBS → Tools → WebSocket Server Settings**.
+6. Toggle: idle = not recording; red = recording. Pause: recording vs paused. Chapter: marks all active outputs. Save Replay: dumps every active replay buffer.
 
 ### Option B — any websocket tool / Multi Action
 
@@ -134,11 +161,13 @@ Call obs-websocket 5 **CallVendorRequest**:
 | Field | Value |
 | --- | --- |
 | vendorName | `obs-multi-source-record` |
-| requestType | `start` / `stop` / `toggle` / `status` / `pause` / `resume` / `toggle_pause` / `add_chapter` |
+| requestType | `start` / `stop` / `toggle` / `status` / `pause` / `resume` / `toggle_pause` / `add_chapter` / `save_replay` / `start_replay` / `stop_replay` / `configure` / `get_settings` / `start_stream` / `stop_stream` / `toggle_stream` |
 
 `add_chapter` accepts optional `requestData.name`. Without a name, chapters are auto-numbered (`Chapter 1`, …).
 
-Example `status` response data: `{ "success": true, "recording": true, "paused": false, "outputs": [...] }`.
+`configure` accepts `auto_start` (`off`/`record`/`stream`/`both`), `replay_enabled`, `replay_seconds`, `split_mode` (`off`/`time`/`size`), `split_time_min`, `split_size_mb`, plus the existing source/destination fields.
+
+Example `status` response data: `{ "success": true, "recording": true, "paused": false, "streaming": false, "replaying": true, "outputs": [...] }`.
 
 ## Building from source
 

@@ -15,6 +15,19 @@ the Free Software Foundation; either version 2 of the License, or
 #include <cstdint>
 #include <cstring>
 
+enum class MsrAutoStartTrigger {
+	Off = 0,
+	Record = 1,
+	Stream = 2,
+	Both = 3,
+};
+
+enum class MsrSplitMode {
+	Off = 0,
+	ByTime = 1,
+	BySize = 2,
+};
+
 enum class MsrOrientation {
 	Horizontal = 0,
 	Vertical = 1,
@@ -50,6 +63,15 @@ struct MsrSettings {
 	int audio_bitrate_kbps = 160;
 	int vertical_width = 1080;
 	int vertical_height = 1920;
+	/** When not Off, MSR recording follows OBS main record and/or stream start/stop. Default Off. */
+	MsrAutoStartTrigger auto_start = MsrAutoStartTrigger::Off;
+	/** Per-source replay buffers (independent of MSR recording). Default off. */
+	bool replay_enabled = false;
+	int replay_seconds = 30;
+	/** File split for MSR recordings (ffmpeg_muxer). Default Off. */
+	MsrSplitMode split_mode = MsrSplitMode::Off;
+	int split_time_min = 30;  /* used when ByTime */
+	int split_size_mb = 1024; /* used when BySize */
 	std::vector<MsrSourceConfig> sources;
 	std::vector<MsrStreamDestination> destinations;
 };
@@ -82,6 +104,72 @@ inline MsrOrientation parse_orientation_token(const char *s, int as_int = 0)
 	if (as_int == (int)MsrOrientation::Both)
 		return MsrOrientation::Both;
 	return MsrOrientation::Horizontal;
+}
+
+inline const char *auto_start_token(MsrAutoStartTrigger t)
+{
+	switch (t) {
+	case MsrAutoStartTrigger::Record:
+		return "record";
+	case MsrAutoStartTrigger::Stream:
+		return "stream";
+	case MsrAutoStartTrigger::Both:
+		return "both";
+	case MsrAutoStartTrigger::Off:
+	default:
+		return "off";
+	}
+}
+
+inline MsrAutoStartTrigger parse_auto_start_token(const char *s, int as_int = 0)
+{
+	if (s && *s) {
+		if (strcmp(s, "record") == 0)
+			return MsrAutoStartTrigger::Record;
+		if (strcmp(s, "stream") == 0)
+			return MsrAutoStartTrigger::Stream;
+		if (strcmp(s, "both") == 0)
+			return MsrAutoStartTrigger::Both;
+		if (strcmp(s, "off") == 0)
+			return MsrAutoStartTrigger::Off;
+	}
+	if (as_int == (int)MsrAutoStartTrigger::Record)
+		return MsrAutoStartTrigger::Record;
+	if (as_int == (int)MsrAutoStartTrigger::Stream)
+		return MsrAutoStartTrigger::Stream;
+	if (as_int == (int)MsrAutoStartTrigger::Both)
+		return MsrAutoStartTrigger::Both;
+	return MsrAutoStartTrigger::Off;
+}
+
+inline const char *split_mode_token(MsrSplitMode m)
+{
+	switch (m) {
+	case MsrSplitMode::ByTime:
+		return "time";
+	case MsrSplitMode::BySize:
+		return "size";
+	case MsrSplitMode::Off:
+	default:
+		return "off";
+	}
+}
+
+inline MsrSplitMode parse_split_mode_token(const char *s, int as_int = 0)
+{
+	if (s && *s) {
+		if (strcmp(s, "time") == 0 || strcmp(s, "by_time") == 0)
+			return MsrSplitMode::ByTime;
+		if (strcmp(s, "size") == 0 || strcmp(s, "by_size") == 0)
+			return MsrSplitMode::BySize;
+		if (strcmp(s, "off") == 0)
+			return MsrSplitMode::Off;
+	}
+	if (as_int == (int)MsrSplitMode::ByTime)
+		return MsrSplitMode::ByTime;
+	if (as_int == (int)MsrSplitMode::BySize)
+		return MsrSplitMode::BySize;
+	return MsrSplitMode::Off;
 }
 
 /** Mask a stream key for UI / API responses. Never log the raw key. */

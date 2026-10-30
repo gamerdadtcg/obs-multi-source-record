@@ -56,6 +56,21 @@
       "Tooltip": "Add a chapter marker to all active Multi Source Record outputs",
       "UUID": "com.travvvman.obs-multi-source-record.chapter",
       "PropertyInspectorPath": "propertyinspector/index.html"
+    },
+    {
+      "Icon": "imgs/action",
+      "Name": "Multi Source Record Save Replay",
+      "States": [
+        {
+          "Image": "imgs/idle",
+          "Name": "Save Replay",
+          "TitleAlignment": "middle",
+          "FontSize": "10"
+        }
+      ],
+      "Tooltip": "Save every active Multi Source Record replay buffer in one press",
+      "UUID": "com.travvvman.obs-multi-source-record.save-replay",
+      "PropertyInspectorPath": "propertyinspector/index.html"
     }
   ],
   "Author": "Travvvman",
@@ -63,7 +78,7 @@
   "Description": "Control OBS Multi Source Record via obs-websocket vendor requests.",
   "Name": "OBS Multi Source Record",
   "Icon": "imgs/plugin",
-  "Version": "1.2.0",
+  "Version": "1.3.0",
   "SDKVersion": 2,
   "OS": [
     {
