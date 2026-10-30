@@ -1307,6 +1307,77 @@ void MsrController::ws_stop_replay(obs_data_t *request_data, obs_data_t *respons
 	obs_data_set_bool(response_data, "replaying", false);
 }
 
+
+void MsrController::ws_vertical_add_source(obs_data_t *request_data, obs_data_t *response_data, void *priv)
+{
+	UNUSED_PARAMETER(priv);
+	const char *name = request_data ? obs_data_get_string(request_data, "source_name") : nullptr;
+	obs_data_set_bool(response_data, "success", false);
+	if (!name || !*name)
+		return;
+	auto *vc = MsrVerticalCanvas::instance();
+	if (!vc)
+		return;
+	auto *c = MsrController::instance();
+	int w = 1080, h = 1920;
+	if (c) {
+		auto s = c->settings();
+		w = s.vertical_width;
+		h = s.vertical_height;
+	}
+	vc->ensure((uint32_t)w, (uint32_t)h);
+	const bool ok = vc->add_existing_source(name);
+	obs_data_set_bool(response_data, "success", ok);
+	obs_data_set_string(response_data, "source_name", name);
+}
+
+void MsrController::ws_vertical_status(obs_data_t *request_data, obs_data_t *response_data, void *priv)
+{
+	UNUSED_PARAMETER(request_data);
+	UNUSED_PARAMETER(priv);
+	auto *vc = MsrVerticalCanvas::instance();
+	obs_data_set_bool(response_data, "ready", vc && vc->ready());
+	if (!vc)
+		return;
+	obs_data_set_int(response_data, "width", vc->width());
+	obs_data_set_int(response_data, "height", vc->height());
+	obs_data_array_t *scenes = obs_data_array_create();
+	for (const auto &n : vc->list_scenes()) {
+		obs_data_t *item = obs_data_create();
+		obs_data_set_string(item, "name", n.c_str());
+		obs_data_array_push_back(scenes, item);
+		obs_data_release(item);
+	}
+	obs_data_set_array(response_data, "scenes", scenes);
+	obs_data_array_release(scenes);
+
+	obs_source_t *prog = vc->program_source();
+	if (prog) {
+		obs_data_set_string(response_data, "program_scene", obs_source_get_name(prog));
+		obs_source_release(prog);
+	}
+
+	obs_data_array_t *items = obs_data_array_create();
+	obs_scene_t *scene = vc->program_scene();
+	if (scene) {
+		auto cb = [](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
+			auto *arr = static_cast<obs_data_array_t *>(param);
+			obs_source_t *src = obs_sceneitem_get_source(item);
+			obs_data_t *row = obs_data_create();
+			obs_data_set_string(row, "name", obs_source_get_name(src));
+			obs_data_set_bool(row, "visible", obs_sceneitem_visible(item));
+			obs_data_array_push_back(arr, row);
+			obs_data_release(row);
+			return true;
+		};
+		obs_scene_enum_items(scene, cb, items);
+		obs_scene_release(scene);
+	}
+	obs_data_set_array(response_data, "sources", items);
+	obs_data_array_release(items);
+	obs_data_set_bool(response_data, "success", true);
+}
+
 void MsrController::register_websocket()
 {
 	ws_vendor_ = obs_websocket_register_vendor("obs-multi-source-record");
@@ -1330,5 +1401,7 @@ void MsrController::register_websocket()
 	obs_websocket_vendor_register_request(ws_vendor_, "save_replay", ws_save_replay, this);
 	obs_websocket_vendor_register_request(ws_vendor_, "start_replay", ws_start_replay, this);
 	obs_websocket_vendor_register_request(ws_vendor_, "stop_replay", ws_stop_replay, this);
+	obs_websocket_vendor_register_request(ws_vendor_, "vertical_add_source", ws_vertical_add_source, this);
+	obs_websocket_vendor_register_request(ws_vendor_, "vertical_status", ws_vertical_status, this);
 	obs_log(LOG_INFO, "registered obs-websocket vendor obs-multi-source-record");
 }
