@@ -362,13 +362,11 @@ void MsrDock::update_recording_state(bool recording)
 	const bool paused = recording && c && c->paused();
 	if (pause_btn_) {
 		pause_btn_->setEnabled(recording);
-		pause_btn_->setText(QString::fromUtf8(
-			obs_module_text(paused ? "ResumeRecording" : "PauseRecording")));
+		pause_btn_->setText(QString::fromUtf8(obs_module_text(paused ? "ResumeRecording" : "PauseRecording")));
 	}
 	if (recording) {
 		start_btn_->setText(QString::fromUtf8(obs_module_text("StopRecording")));
-		status_label_->setText(QString::fromUtf8(
-			obs_module_text(paused ? "StatusPaused" : "StatusRecording")));
+		status_label_->setText(QString::fromUtf8(obs_module_text(paused ? "StatusPaused" : "StatusRecording")));
 	} else {
 		start_btn_->setText(QString::fromUtf8(obs_module_text("StartRecording")));
 		status_label_->setText(QString::fromUtf8(obs_module_text("StatusIdle")));

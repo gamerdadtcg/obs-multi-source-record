@@ -417,8 +417,8 @@ void MsrController::register_hotkey()
 							  hotkey_pressed, this);
 	}
 	if (pause_hotkey_id_ == OBS_INVALID_HOTKEY_ID) {
-		pause_hotkey_id_ = obs_hotkey_register_frontend(
-			"msr.pause", "Multi Source Record: Pause/Resume", pause_hotkey_pressed, this);
+		pause_hotkey_id_ = obs_hotkey_register_frontend("msr.pause", "Multi Source Record: Pause/Resume",
+								pause_hotkey_pressed, this);
 	}
 }
 

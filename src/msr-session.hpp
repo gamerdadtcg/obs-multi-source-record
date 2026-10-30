@@ -114,10 +114,14 @@ private:
 						r += sample(7) * 0.5f;
 					}
 				}
-				if (l > 1.0f) l = 1.0f;
-				if (l < -1.0f) l = -1.0f;
-				if (r > 1.0f) r = 1.0f;
-				if (r < -1.0f) r = -1.0f;
+				if (l > 1.0f)
+					l = 1.0f;
+				if (l < -1.0f)
+					l = -1.0f;
+				if (r > 1.0f)
+					r = 1.0f;
+				if (r < -1.0f)
+					r = -1.0f;
 				data[0][write_pos] = l;
 				data[1][write_pos] = r;
 				write_pos = (write_pos + 1) % kCapacity;
@@ -125,7 +129,8 @@ private:
 			}
 		}
 
-		bool pop_mixed_into(struct audio_output_data *mixes, uint32_t mixers, size_t out_channels, bool drain_partial)
+		bool pop_mixed_into(struct audio_output_data *mixes, uint32_t mixers, size_t out_channels,
+				    bool drain_partial)
 		{
 			if (size < AUDIO_OUTPUT_FRAMES) {
 				if (!drain_partial || size == 0)
