@@ -19,6 +19,8 @@ the Free Software Foundation; either version 2 of the License, or
 #include "plugin-support.h"
 #include "msr-controller.hpp"
 #include "msr-dock.hpp"
+#include "msr-preview-dock.hpp"
+#include "msr-vertical-canvas.hpp"
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
@@ -34,6 +36,7 @@ MODULE_EXPORT const char *obs_module_name(void)
 }
 
 static MsrDock *dock_widget = nullptr;
+static MsrPreviewDock *preview_dock = nullptr;
 
 static void frontend_event(enum obs_frontend_event event, void *)
 {
@@ -42,6 +45,10 @@ static void frontend_event(enum obs_frontend_event event, void *)
 			c->load_settings();
 			if (dock_widget)
 				QMetaObject::invokeMethod(dock_widget, "refresh_sources", Qt::QueuedConnection);
+			if (auto *vc = MsrVerticalCanvas::instance()) {
+				auto s = c->settings();
+				vc->ensure((uint32_t)s.vertical_width, (uint32_t)s.vertical_height);
+			}
 		}
 	} else if (event == OBS_FRONTEND_EVENT_EXIT || event == OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN) {
 		if (auto *c = MsrController::instance())
@@ -54,6 +61,7 @@ bool obs_module_load(void)
 	obs_log(LOG_INFO, "loading Multi Source Record %s", PLUGIN_VERSION);
 
 	MsrController::create();
+	MsrVerticalCanvas::create();
 	MsrController::instance()->load_settings();
 	MsrController::instance()->register_hotkey();
 
@@ -62,6 +70,10 @@ bool obs_module_load(void)
 	QMainWindow *main = static_cast<QMainWindow *>(obs_frontend_get_main_window());
 	dock_widget = new MsrDock(main);
 	obs_frontend_add_dock_by_id("MultiSourceRecordDock", obs_module_text("DockTitle"), dock_widget);
+
+	preview_dock = new MsrPreviewDock(main);
+	obs_frontend_add_dock_by_id("MultiSourceRecordVerticalPreview", obs_module_text("VerticalPreviewDockTitle"),
+				    preview_dock);
 
 	return true;
 }
@@ -75,8 +87,11 @@ void obs_module_post_load(void)
 void obs_module_unload(void)
 {
 	obs_frontend_remove_event_callback(frontend_event, nullptr);
+	obs_frontend_remove_dock("MultiSourceRecordVerticalPreview");
+	preview_dock = nullptr;
 	obs_frontend_remove_dock("MultiSourceRecordDock");
 	dock_widget = nullptr;
 	MsrController::destroy();
+	MsrVerticalCanvas::destroy();
 	obs_log(LOG_INFO, "unloaded Multi Source Record");
 }

@@ -9,6 +9,7 @@ the Free Software Foundation; either version 2 of the License, or
 */
 
 #include "msr-session.hpp"
+#include "msr-vertical-canvas.hpp"
 #include "plugin-support.h"
 
 #include <obs-module.h>
@@ -76,11 +77,12 @@ void ensure_directory(char *path)
 } // namespace
 
 MsrSession::MsrSession(std::string source_name, MsrOrientation orientation, std::string extra_audio,
-		       const MsrSettings &settings)
+		       const MsrSettings &settings, bool use_vertical_canvas)
 	: source_name_(std::move(source_name)),
 	  orientation_(orientation),
 	  extra_audio_name_(std::move(extra_audio)),
-	  settings_(settings)
+	  settings_(settings),
+	  use_vertical_canvas_(use_vertical_canvas)
 {
 }
 
@@ -256,6 +258,39 @@ const char *MsrSession::resolve_video_encoder_id() const
 	const char *id = try_ids({"obs_nvenc_h264_tex", "jim_nvenc", "ffmpeg_nvenc", "h264_texture_amf", "obs_qsv11_v2",
 				  "obs_qsv11", "obs_x264"});
 	return id ? id : "obs_x264";
+}
+
+bool MsrSession::setup_video_from_canvas()
+{
+	auto *vc = MsrVerticalCanvas::instance();
+	if (!vc) {
+		obs_log(LOG_ERROR, "vertical canvas manager missing");
+		return false;
+	}
+	if (!vc->ensure((uint32_t)settings_.vertical_width, (uint32_t)settings_.vertical_height)) {
+		obs_log(LOG_ERROR, "failed to ensure vertical canvas");
+		return false;
+	}
+
+	video_output_ = vc->video();
+	if (!video_output_) {
+		obs_log(LOG_ERROR, "vertical canvas has no video");
+		return false;
+	}
+	width_ = vc->width();
+	height_ = vc->height();
+
+	obs_source_t *prog = vc->program_source();
+	if (prog) {
+		activate_source(prog);
+		activated_source_ = prog;
+		weak_source_ = obs_source_get_weak_source(prog);
+	} else {
+		obs_log(LOG_WARNING, "vertical canvas has no program source yet");
+	}
+
+	obs_log(LOG_INFO, "using vertical canvas video %ux%u", width_, height_);
+	return true;
 }
 
 bool MsrSession::setup_video()
@@ -485,7 +520,8 @@ bool MsrSession::start()
 		have_capture_audio_ = false;
 	}
 
-	if (!setup_video() || !setup_audio() || !setup_encoders_and_output()) {
+	const bool video_ok = use_vertical_canvas_ ? setup_video_from_canvas() : setup_video();
+	if (!video_ok || !setup_audio() || !setup_encoders_and_output()) {
 		teardown();
 		return false;
 	}
@@ -580,7 +616,10 @@ void MsrSession::teardown()
 		owns_audio_output_ = false;
 	}
 	deactivate_sources();
-	if (view_) {
+	if (use_vertical_canvas_) {
+		/* Canvas video is owned by the frontend canvas — do not remove it. */
+		video_output_ = nullptr;
+	} else if (view_) {
 		if (video_output_) {
 			obs_view_remove(view_);
 			video_output_ = nullptr;

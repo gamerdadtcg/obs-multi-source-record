@@ -22,7 +22,7 @@ the Free Software Foundation; either version 2 of the License, or
 class MsrSession {
 public:
 	MsrSession(std::string source_name, MsrOrientation orientation, std::string extra_audio,
-		   const MsrSettings &settings);
+		   const MsrSettings &settings, bool use_vertical_canvas = false);
 	~MsrSession();
 
 	MsrSession(const MsrSession &) = delete;
@@ -162,6 +162,7 @@ private:
 	};
 
 	bool setup_video();
+	bool setup_video_from_canvas();
 	bool setup_audio();
 	bool setup_encoders_and_output();
 	void teardown();
@@ -185,6 +186,7 @@ private:
 	MsrOrientation orientation_;
 	std::string extra_audio_name_;
 	MsrSettings settings_;
+	bool use_vertical_canvas_ = false;
 	std::string output_path_;
 
 	obs_weak_source_t *weak_source_ = nullptr;

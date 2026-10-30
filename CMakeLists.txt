@@ -37,6 +37,7 @@ endif()
 target_sources(
   ${CMAKE_PROJECT_NAME}
   PRIVATE src/plugin-main.cpp src/msr-controller.cpp src/msr-session.cpp src/msr-dock.cpp
+          src/msr-vertical-canvas.cpp src/msr-preview-dock.cpp
 )
 
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)

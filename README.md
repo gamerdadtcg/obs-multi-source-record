@@ -1,13 +1,14 @@
 # Multi Source Record for OBS Studio
 
-A simpler alternative to the classic Source Record filter. Pick the sources you want, choose **Horizontal**, **Vertical** (center-cropped 9:16), or **Both**, and hit one Start button. Each source is written to its **own file** with that source’s **own audio** captured directly (not via mixer tracks 1–6), so sources that only live on tracks 2/3/4 still record with sound.
+A simpler alternative to the classic Source Record filter. Pick the sources you want, choose **Horizontal**, **Vertical** (shared vertical canvas), or **Both**, and hit one Start button. Horizontal sources each get their **own file** with that source’s **own audio** captured directly (not via mixer tracks 1–6). Vertical / Both also records one file from the **MSR Vertical** canvas you compose yourself.
 
 **Does not touch** OBS’s main stream or main recording.
 
 ## Features
 
 - Dock UI checklist of sources
-- Per-source orientation: Horizontal / Vertical / Both (two files)
+- Per-source orientation: Horizontal / Vertical / Both (Both = horizontal file + shared vertical canvas file)
+- **MSR Vertical** multi-canvas (OBS 31+) with a preview dock — you build the vertical scene
 - Direct per-source audio + optional extra audio source (e.g. a mic)
 - Output folder + filename pattern `{source}_{orientation}_{date}_{time}`
 - Container: `mkv` (default) or `mp4`
@@ -90,9 +91,9 @@ Tag a version like `1.0.0` on `main`. The Push workflow creates a **draft** GitH
 
 The dock has **Pause** / **Resume** and **Chapter** buttons next to Start/Stop. Pause only applies while recording. Chapter writes a `.chapters.json` sidecar next to each file and calls the output's native `add_chapter` when supported (Hybrid MP4 / OBS 30.2+).
 
-### Vertical crop
+### Vertical canvas
 
-Vertical mode center-crops the source to 9:16 and scales to the resolution in Advanced (default **1080×1920**).
+Vertical (and the vertical half of Both) records the shared **MSR Vertical** canvas once — not a per-source center crop. The plugin creates that canvas (default scene named **Vertical**) at the resolution in Advanced (default **1080×1920**). Compose your vertical layout in that canvas’s scenes; open **View → Docks → MSR Vertical Preview** to see it. Horizontal recording is unchanged (one file per enabled source).
 
 ## Stream Deck
 

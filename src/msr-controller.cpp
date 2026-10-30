@@ -9,6 +9,7 @@ the Free Software Foundation; either version 2 of the License, or
 */
 
 #include "msr-controller.hpp"
+#include "msr-vertical-canvas.hpp"
 #include "plugin-support.h"
 #include "obs-websocket-api.h"
 
@@ -264,6 +265,7 @@ bool MsrController::start_all()
 	}
 
 	bool any = false;
+	bool want_vertical = false;
 	std::vector<std::unique_ptr<MsrSession>> started;
 	for (const auto &cfg : snap.sources) {
 		if (!cfg.enabled || cfg.source_name.empty())
@@ -278,10 +280,26 @@ bool MsrController::start_all()
 		};
 
 		if (cfg.orientation == MsrOrientation::Both) {
+			want_vertical = true;
 			launch(MsrOrientation::Horizontal);
-			launch(MsrOrientation::Vertical);
+		} else if (cfg.orientation == MsrOrientation::Vertical) {
+			want_vertical = true;
 		} else {
-			launch(cfg.orientation);
+			launch(MsrOrientation::Horizontal);
+		}
+	}
+
+	if (want_vertical) {
+		auto *vc = MsrVerticalCanvas::instance();
+		if (vc && vc->ensure((uint32_t)snap.vertical_width, (uint32_t)snap.vertical_height)) {
+			auto session =
+				std::make_unique<MsrSession>("MSR Vertical", MsrOrientation::Vertical, "", snap, true);
+			if (session->start()) {
+				started.push_back(std::move(session));
+				any = true;
+			}
+		} else {
+			obs_log(LOG_ERROR, "vertical canvas unavailable; skipped vertical recording");
 		}
 	}
 
