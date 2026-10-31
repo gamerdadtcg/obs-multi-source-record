@@ -183,7 +183,7 @@ MsrPhoneFrame::MsrPhoneFrame(QWidget *parent) : QWidget(parent)
 	/* Dark letter/pillarbox host around the centered phone rect. */
 	setStyleSheet("background-color: #141416;");
 	display_ = new MsrPreviewDisplay(this);
-	display_->setStyleSheet("border: 1px solid #c8c8d6;");
+	/* Do not stylesheet the native OBS display widget — that can crash Qt/OBS. Border is drawn in GS. */
 }
 
 void MsrPhoneFrame::resizeEvent(QResizeEvent *event)
