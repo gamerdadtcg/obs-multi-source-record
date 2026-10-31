@@ -22,6 +22,8 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QListWidgetItem>
 #include <QPushButton>
 #include <QLabel>
+#include <QCheckBox>
+#include <QEvent>
 #include <QTimer>
 #include <QShowEvent>
 #include <QHideEvent>
@@ -33,7 +35,6 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QGuiApplication>
 #include <QSignalBlocker>
 #include <QToolButton>
-#include <QCheckBox>
 #include <QMenu>
 #include <QContextMenuEvent>
 #include <QKeyEvent>
@@ -56,9 +57,33 @@ the Free Software Foundation; either version 2 of the License, or
 #include <obs-nix-platform.h>
 #endif
 
+
+struct MsrSelHandleCtx {
+	const vec2 *pos;
+	obs_sceneitem_t *item;
+	MsrItemHandle handle;
+	MsrPreviewDisplay *self;
+};
+
+bool msr_selected_handle_cb(obs_scene_t *, obs_sceneitem_t *it, void *p)
+{
+	auto *c = static_cast<MsrSelHandleCtx *>(p);
+	if (!obs_sceneitem_selected(it) || obs_sceneitem_locked(it))
+		return true;
+	MsrItemHandle h = c->self->handle_at_pos(it, *c->pos);
+	if (h != MsrItemHandle::None) {
+		c->item = it;
+		c->handle = h;
+	}
+	return true;
+}
+
 namespace {
 
-constexpr float HANDLE_RADIUS = 14.0f;
+constexpr float HANDLE_RADIUS = 10.0f;
+constexpr float HANDLE_SEL_RADIUS = 16.0f;
+constexpr float DRAG_THRESHOLD = 5.0f;
+constexpr float SNAP_DISTANCE = 12.0f;
 
 inline QSize pixel_size(QWidget *w)
 {
@@ -350,11 +375,26 @@ void MsrPreviewDisplay::update_preview_layout(uint32_t cx, uint32_t cy)
 
 void MsrPreviewDisplay::preview_to_world(float px, float py, vec2 &out) const
 {
+	/* Same formula as OBSBasicPreview::GetMouseEventPos:
+	 * preview_x_/y_ and preview_scale_ are in device pixels; qt pos is logical. */
 	const float dpr = (float)devicePixelRatioF();
-	px *= dpr;
-	py *= dpr;
-	out.x = (px - (float)preview_x_) / preview_scale_;
-	out.y = (py - (float)preview_y_) / preview_scale_;
+	if (dpr < 0.001f || preview_scale_ < 0.001f) {
+		out.x = 0.0f;
+		out.y = 0.0f;
+		return;
+	}
+	const float scale = dpr / preview_scale_;
+	out.x = (px - float(preview_x_) / dpr) * scale;
+	out.y = (py - float(preview_y_) / dpr) * scale;
+}
+
+vec2 MsrPreviewDisplay::get_mouse_event_pos(const QPointF &qt) const
+{
+	vec2 pos;
+	preview_to_world((float)qt.x(), (float)qt.y(), pos);
+	pos.x = std::round(pos.x);
+	pos.y = std::round(pos.y);
+	return pos;
 }
 
 void MsrPreviewDisplay::draw_preview(void *param, uint32_t cx, uint32_t cy)
@@ -464,22 +504,32 @@ bool MsrPreviewDisplay::draw_selected_cb(obs_scene_t *, obs_sceneitem_t *item, v
 		gs_draw(GS_LINESTRIP, 0, 0);
 	}
 
-	/* Corner handles */
-	const float hs = 0.06f;
-	auto draw_handle = [&](float hx, float hy) {
+	/* Handles — fixed-ish screen size via inverse box scale (OBS-style grab squares). */
+	vec2 box_scale;
+	obs_sceneitem_get_box_scale(item, &box_scale);
+	float hx = HANDLE_RADIUS / (fabsf(box_scale.x) > 1.0f ? fabsf(box_scale.x) : 1.0f);
+	float hy = HANDLE_RADIUS / (fabsf(box_scale.y) > 1.0f ? fabsf(box_scale.y) : 1.0f);
+	if (hx < 0.012f)
+		hx = 0.012f;
+	if (hy < 0.012f)
+		hy = 0.012f;
+	if (hx > 0.08f)
+		hx = 0.08f;
+	if (hy > 0.08f)
+		hy = 0.08f;
+	auto draw_handle = [&](float u, float v) {
 		gs_render_start(true);
-		gs_vertex2f(hx - hs, hy - hs);
-		gs_vertex2f(hx - hs, hy + hs);
-		gs_vertex2f(hx + hs, hy + hs);
-		gs_vertex2f(hx + hs, hy - hs);
-		gs_vertex2f(hx - hs, hy - hs);
+		gs_vertex2f(u - hx, v - hy);
+		gs_vertex2f(u + hx, v - hy);
+		gs_vertex2f(u - hx, v + hy);
+		gs_vertex2f(u + hx, v + hy);
 		gs_vertbuffer_t *hbuf = gs_render_save();
 		vec4 hc;
 		vec4_set(&hc, 1.0f, 1.0f, 1.0f, 1.0f);
 		gs_effect_set_vec4(color, &hc);
 		while (gs_effect_loop(solid, "Solid")) {
 			gs_load_vertexbuffer(hbuf);
-			gs_draw(GS_LINESTRIP, 0, 0);
+			gs_draw(GS_TRISTRIP, 0, 0);
 		}
 		gs_vertexbuffer_destroy(hbuf);
 	};
@@ -531,7 +581,7 @@ MsrItemHandle MsrPreviewDisplay::handle_at_pos(obs_sceneitem_t *item, const vec2
 
 	matrix4 box;
 	obs_sceneitem_get_box_transform(item, &box);
-	const float radius = HANDLE_RADIUS / (preview_scale_ > 0.001f ? preview_scale_ : 1.0f);
+	const float radius = HANDLE_SEL_RADIUS / (preview_scale_ > 0.001f ? preview_scale_ : 1.0f);
 
 	struct Probe {
 		float u, v;
@@ -561,16 +611,164 @@ MsrItemHandle MsrPreviewDisplay::handle_at_pos(obs_sceneitem_t *item, const vec2
 	return best;
 }
 
+void MsrPreviewDisplay::prepare_stretch(obs_sceneitem_t *item, MsrItemHandle handle)
+{
+	stretch_item_ = item;
+	stretch_handle_ = handle;
+	if (!item || handle == MsrItemHandle::None)
+		return;
+
+	stretch_start_size_ = get_item_size(item);
+	obs_sceneitem_get_pos(item, &stretch_start_pos_);
+	obs_sceneitem_get_crop(item, &start_crop_);
+
+	matrix4 boxTransform;
+	obs_sceneitem_get_box_transform(item, &boxTransform);
+	vec3 itemUL;
+	vec3_from_vec4(&itemUL, &boxTransform.t);
+	const float itemRot = obs_sceneitem_get_rot(item);
+
+	matrix4_identity(&item_to_screen_);
+	matrix4_rotate_aa4f(&item_to_screen_, &item_to_screen_, 0.0f, 0.0f, 1.0f, RAD(itemRot));
+	matrix4_translate3f(&item_to_screen_, &item_to_screen_, itemUL.x, itemUL.y, 0.0f);
+
+	matrix4_identity(&screen_to_item_);
+	matrix4_translate3f(&screen_to_item_, &screen_to_item_, -itemUL.x, -itemUL.y, 0.0f);
+	matrix4_rotate_aa4f(&screen_to_item_, &screen_to_item_, 0.0f, 0.0f, 1.0f, RAD(-itemRot));
+}
+
+void MsrPreviewDisplay::clamp_aspect(vec3 &tl, vec3 &br, vec2 &size, const vec2 &base_size) const
+{
+	if (base_size.x < 1.0f || base_size.y < 1.0f)
+		return;
+	const float baseAspect = base_size.x / base_size.y;
+	const float aspect = size.x / (size.y != 0.0f ? size.y : 1.0f);
+	const uint32_t stretchFlags = (uint32_t)stretch_handle_;
+	const float startCX = stretch_start_size_.x;
+	const float startCY = stretch_start_size_.y;
+
+	if (stretch_handle_ == MsrItemHandle::TopLeft || stretch_handle_ == MsrItemHandle::TopRight ||
+	    stretch_handle_ == MsrItemHandle::BottomLeft || stretch_handle_ == MsrItemHandle::BottomRight) {
+		if (fabsf(aspect) < fabsf(baseAspect))
+			size.x = size.y * baseAspect;
+		else
+			size.y = size.x / baseAspect;
+	} else if (stretch_handle_ == MsrItemHandle::TopCenter || stretch_handle_ == MsrItemHandle::BottomCenter) {
+		/* Edge: grow X symmetrically so aspect holds without drift. */
+		size.x = size.y * baseAspect;
+		tl.x = (startCX - size.x) * 0.5f;
+		br.x = tl.x + size.x;
+	} else if (stretch_handle_ == MsrItemHandle::CenterLeft || stretch_handle_ == MsrItemHandle::CenterRight) {
+		size.y = size.x / baseAspect;
+		tl.y = (startCY - size.y) * 0.5f;
+		br.y = tl.y + size.y;
+	}
+
+	size.x = std::round(size.x);
+	size.y = std::round(size.y);
+
+	if (stretchFlags & (uint32_t)MsrItemHandle::Left)
+		tl.x = br.x - size.x;
+	else if (stretchFlags & (uint32_t)MsrItemHandle::Right)
+		br.x = tl.x + size.x;
+
+	if (stretchFlags & (uint32_t)MsrItemHandle::Top)
+		tl.y = br.y - size.y;
+	else if (stretchFlags & (uint32_t)MsrItemHandle::Bottom)
+		br.y = tl.y + size.y;
+}
+
+vec3 MsrPreviewDisplay::snap_offset(const vec3 &tl, const vec3 &br) const
+{
+	vec3 clampOffset;
+	vec3_zero(&clampOffset);
+	if (!snap_enabled_)
+		return clampOffset;
+
+	const float clampDist = SNAP_DISTANCE / (preview_scale_ > 0.001f ? preview_scale_ : 1.0f);
+	const float screenW = float(world_cx_);
+	const float screenH = float(world_cy_);
+	const float centerX = br.x - (br.x - tl.x) / 2.0f;
+	const float centerY = br.y - (br.y - tl.y) / 2.0f;
+
+	auto edge = [&](float moveAxis, float checkAxis, float &offset) {
+		const float dist = fabsf(checkAxis - moveAxis);
+		if (dist < clampDist && fabsf(offset) < 0.001f)
+			offset = checkAxis - moveAxis;
+	};
+
+	edge(tl.x, 0.0f, clampOffset.x);
+	edge(br.x, screenW, clampOffset.x);
+	edge(tl.y, 0.0f, clampOffset.y);
+	edge(br.y, screenH, clampOffset.y);
+
+	if (fabsf(screenW / 2.0f - centerX) < clampDist && fabsf(clampOffset.x) < 0.001f)
+		clampOffset.x = screenW / 2.0f - centerX;
+	if (fabsf(screenH / 2.0f - centerY) < clampDist && fabsf(clampOffset.y) < 0.001f)
+		clampOffset.y = screenH / 2.0f - centerY;
+
+	return clampOffset;
+}
+
+void MsrPreviewDisplay::update_hover_cursor(const vec2 &world)
+{
+	obs_sceneitem_t *hit = item_at_pos(world);
+	MsrItemHandle h = MsrItemHandle::None;
+	if (hit && obs_sceneitem_selected(hit) && !obs_sceneitem_locked(hit))
+		h = handle_at_pos(hit, world);
+
+	const uint32_t flags = (uint32_t)h;
+	if (h == MsrItemHandle::None) {
+		if (hit && obs_sceneitem_selected(hit) && !obs_sceneitem_locked(hit))
+			setCursor(Qt::SizeAllCursor);
+		else
+			unsetCursor();
+		return;
+	}
+	const bool corner = (flags & (flags - 1)) != 0;
+	if ((flags & (uint32_t)MsrItemHandle::Left && flags & (uint32_t)MsrItemHandle::Top) ||
+	    (flags & (uint32_t)MsrItemHandle::Right && flags & (uint32_t)MsrItemHandle::Bottom))
+		setCursor(Qt::SizeFDiagCursor);
+	else if ((flags & (uint32_t)MsrItemHandle::Left && flags & (uint32_t)MsrItemHandle::Bottom) ||
+		 (flags & (uint32_t)MsrItemHandle::Right && flags & (uint32_t)MsrItemHandle::Top))
+		setCursor(Qt::SizeBDiagCursor);
+	else if (flags & (uint32_t)MsrItemHandle::Left || flags & (uint32_t)MsrItemHandle::Right)
+		setCursor(Qt::SizeHorCursor);
+	else if (flags & (uint32_t)MsrItemHandle::Top || flags & (uint32_t)MsrItemHandle::Bottom)
+		setCursor(Qt::SizeVerCursor);
+	else if (corner)
+		setCursor(Qt::SizeFDiagCursor);
+	else
+		setCursor(Qt::SizeAllCursor);
+}
+
 void MsrPreviewDisplay::move_selected(const vec2 &pos)
 {
 	if (!stretch_item_)
 		return;
-	vec2 delta;
-	vec2_sub(&delta, &pos, &last_pos_);
+
+	vec2 offset, moveOffset;
+	vec2_sub(&offset, &pos, &start_pos_);
+	vec2_sub(&moveOffset, &offset, &last_move_offset_);
+
+	if (!(QGuiApplication::keyboardModifiers() & Qt::ControlModifier) && snap_enabled_) {
+		vec2 size = get_item_size(stretch_item_);
+		vec2 cur;
+		obs_sceneitem_get_pos(stretch_item_, &cur);
+		vec3 tl, br;
+		vec3_set(&tl, cur.x + moveOffset.x, cur.y + moveOffset.y, 0.0f);
+		vec3_set(&br, tl.x + size.x, tl.y + size.y, 0.0f);
+		vec3 snap = snap_offset(tl, br);
+		moveOffset.x += snap.x;
+		moveOffset.y += snap.y;
+	}
+
+	vec2_add(&last_move_offset_, &last_move_offset_, &moveOffset);
+
 	vec2 cur;
 	obs_sceneitem_get_pos(stretch_item_, &cur);
-	cur.x = std::round(cur.x + delta.x);
-	cur.y = std::round(cur.y + delta.y);
+	cur.x = std::round(cur.x + moveOffset.x);
+	cur.y = std::round(cur.y + moveOffset.y);
 	obs_sceneitem_set_pos(stretch_item_, &cur);
 	last_pos_ = pos;
 }
@@ -580,36 +778,91 @@ void MsrPreviewDisplay::stretch_selected(const vec2 &pos)
 	if (!stretch_item_ || stretch_handle_ == MsrItemHandle::None)
 		return;
 
-	const uint32_t flags = (uint32_t)stretch_handle_;
-	vec2 size = stretch_start_size_;
-	vec2 p = stretch_start_pos_;
+	const uint32_t stretchFlags = (uint32_t)stretch_handle_;
+	const bool shiftDown = QGuiApplication::keyboardModifiers() & Qt::ShiftModifier;
 
-	float dx = pos.x - start_pos_.x;
-	float dy = pos.y - start_pos_.y;
+	vec3 tl, br, pos3;
+	vec3_zero(&tl);
+	vec3_set(&br, stretch_start_size_.x, stretch_start_size_.y, 0.0f);
 
-	if (flags & (uint32_t)MsrItemHandle::Left) {
-		p.x = stretch_start_pos_.x + dx;
-		size.x = stretch_start_size_.x - dx;
-	} else if (flags & (uint32_t)MsrItemHandle::Right) {
-		size.x = stretch_start_size_.x + dx;
-	}
-	if (flags & (uint32_t)MsrItemHandle::Top) {
-		p.y = stretch_start_pos_.y + dy;
-		size.y = stretch_start_size_.y - dy;
-	} else if (flags & (uint32_t)MsrItemHandle::Bottom) {
-		size.y = stretch_start_size_.y + dy;
-	}
+	vec3_set(&pos3, pos.x, pos.y, 0.0f);
+	vec3_transform(&pos3, &pos3, &screen_to_item_);
 
+	if (stretchFlags & (uint32_t)MsrItemHandle::Left)
+		tl.x = pos3.x;
+	else if (stretchFlags & (uint32_t)MsrItemHandle::Right)
+		br.x = pos3.x;
+	if (stretchFlags & (uint32_t)MsrItemHandle::Top)
+		tl.y = pos3.y;
+	else if (stretchFlags & (uint32_t)MsrItemHandle::Bottom)
+		br.y = pos3.y;
+
+	obs_source_t *source = obs_sceneitem_get_source(stretch_item_);
+	const uint32_t source_cx = obs_source_get_width(source);
+	const uint32_t source_cy = obs_source_get_height(source);
+	if (!source_cx || !source_cy)
+		return;
+
+	vec2 baseSize;
+	obs_sceneitem_crop crop;
+	obs_sceneitem_get_crop(stretch_item_, &crop);
+	vec2_set(&baseSize, float(source_cx) - float(crop.left + crop.right),
+		 float(source_cy) - float(crop.top + crop.bottom));
+	if (baseSize.x < 1.0f)
+		baseSize.x = 1.0f;
+	if (baseSize.y < 1.0f)
+		baseSize.y = 1.0f;
+
+	vec2 size;
+	vec2_set(&size, br.x - tl.x, br.y - tl.y);
+
+	/* Aspect by default; Shift = free stretch (OBS scale-mode behavior). */
+	if (!shiftDown)
+		clamp_aspect(tl, br, size, baseSize);
+
+	if (tl.x > br.x)
+		std::swap(tl.x, br.x);
+	if (tl.y > br.y)
+		std::swap(tl.y, br.y);
+	vec2_abs(&size, &size);
 	if (size.x < 2.0f)
 		size.x = 2.0f;
 	if (size.y < 2.0f)
 		size.y = 2.0f;
 
-	obs_sceneitem_set_bounds_type(stretch_item_, OBS_BOUNDS_STRETCH);
-	obs_sceneitem_set_bounds_alignment(stretch_item_, OBS_ALIGN_TOP | OBS_ALIGN_LEFT);
-	obs_sceneitem_set_alignment(stretch_item_, OBS_ALIGN_TOP | OBS_ALIGN_LEFT);
-	obs_sceneitem_set_bounds(stretch_item_, &size);
-	obs_sceneitem_set_pos(stretch_item_, &p);
+	obs_bounds_type boundsType = obs_sceneitem_get_bounds_type(stretch_item_);
+	obs_sceneitem_defer_update_begin(stretch_item_);
+	if (shiftDown) {
+		/* Free resize may distort. */
+		obs_sceneitem_set_bounds_type(stretch_item_, OBS_BOUNDS_STRETCH);
+		obs_sceneitem_set_bounds_alignment(stretch_item_, OBS_ALIGN_TOP | OBS_ALIGN_LEFT);
+		obs_sceneitem_set_alignment(stretch_item_, OBS_ALIGN_TOP | OBS_ALIGN_LEFT);
+		obs_sceneitem_set_bounds(stretch_item_, &size);
+	} else {
+		/* Keep aspect: uniform scale from source base (scale.x == scale.y). */
+		vec2 scale;
+		vec2_div(&scale, &size, &baseSize);
+		/* After clamp_aspect, size matches baseAspect so sx≈sy; force exact. */
+		const float s = (fabsf(scale.x) + fabsf(scale.y)) * 0.5f;
+		if (s > 0.0001f) {
+			scale.x = s;
+			scale.y = s;
+		}
+		obs_sceneitem_set_bounds_type(stretch_item_, OBS_BOUNDS_NONE);
+		obs_sceneitem_set_bounds_alignment(stretch_item_, OBS_ALIGN_TOP | OBS_ALIGN_LEFT);
+		obs_sceneitem_set_alignment(stretch_item_, OBS_ALIGN_TOP | OBS_ALIGN_LEFT);
+		obs_sceneitem_set_scale(stretch_item_, &scale);
+		(void)boundsType;
+	}
+
+	/* Position from top-left of stretched rect in item space → screen. */
+	vec3 newPos3;
+	vec3_set(&newPos3, tl.x, tl.y, 0.0f);
+	vec3_transform(&newPos3, &newPos3, &item_to_screen_);
+	vec2 newPos;
+	vec2_set(&newPos, std::round(newPos3.x), std::round(newPos3.y));
+	obs_sceneitem_set_pos(stretch_item_, &newPos);
+	obs_sceneitem_defer_update_end(stretch_item_);
 }
 
 void MsrPreviewDisplay::crop_selected(const vec2 &pos)
@@ -622,7 +875,7 @@ void MsrPreviewDisplay::crop_selected(const vec2 &pos)
 	if (sw < 1.0f || sh < 1.0f)
 		return;
 
-	vec2 size = get_item_size(stretch_item_);
+	vec2 size = stretch_start_size_;
 	float dx = pos.x - start_pos_.x;
 	float dy = pos.y - start_pos_.y;
 	const uint32_t flags = (uint32_t)stretch_handle_;
@@ -673,55 +926,69 @@ void MsrPreviewDisplay::mousePressEvent(QMouseEvent *event)
 	QSize ps = pixel_size(this);
 	update_preview_layout((uint32_t)ps.width(), (uint32_t)ps.height());
 
-	vec2 world;
-	preview_to_world((float)qt.x(), (float)qt.y(), world);
+	vec2 world = get_mouse_event_pos(qt);
 	start_pos_ = world;
 	last_pos_ = world;
+	vec2_zero(&last_move_offset_);
 	mouse_down_ = true;
 	mouse_moved_ = false;
+	mouse_over_items_ = false;
 	cropping_ = (QGuiApplication::keyboardModifiers() & Qt::AltModifier);
 
-	/* Clear selection then select clicked item (unless shift). */
 	auto *vc = MsrVerticalCanvas::instance();
 	obs_scene_t *scene = vc ? vc->program_scene() : nullptr;
-	if (scene) {
-		const bool shift = QGuiApplication::keyboardModifiers() & Qt::ShiftModifier;
-		if (!shift) {
-			struct ClearCtx {
-			} clear;
-			obs_scene_enum_items(
-				scene,
-				[](obs_scene_t *, obs_sceneitem_t *it, void *) {
-					obs_sceneitem_select(it, false);
-					return true;
-				},
-				&clear);
-		}
-		obs_sceneitem_t *hit = item_at_pos(world);
-		if (hit)
-			obs_sceneitem_select(hit, true);
-
-		const bool locked = hit && obs_sceneitem_locked(hit);
-		stretch_item_ = (hit && !locked) ? hit : nullptr;
-		stretch_handle_ = stretch_item_ ? handle_at_pos(stretch_item_, world) : MsrItemHandle::None;
-		if (stretch_item_) {
-			stretch_start_size_ = get_item_size(stretch_item_);
-			obs_sceneitem_get_pos(stretch_item_, &stretch_start_pos_);
-			obs_sceneitem_get_crop(stretch_item_, &start_crop_);
-			if (stretch_handle_ != MsrItemHandle::None)
-				setCursor(Qt::SizeFDiagCursor);
-			else
-				setCursor(Qt::SizeAllCursor);
-		}
-		if (hit) {
-			const char *n = obs_source_get_name(obs_sceneitem_get_source(hit));
-			if (n)
-				emit selection_changed(QString::fromUtf8(n));
-		} else {
-			emit selection_changed(QString());
-		}
-		obs_scene_release(scene);
+	if (!scene) {
+		event->accept();
+		return;
 	}
+
+	/* Prefer handles on already-selected items, then topmost hit. */
+	obs_sceneitem_t *selected_hit = nullptr;
+	MsrItemHandle handle = MsrItemHandle::None;
+	MsrSelHandleCtx shctx{&world, nullptr, MsrItemHandle::None, this};
+	obs_scene_enum_items(scene, msr_selected_handle_cb, &shctx);
+	if (shctx.item) {
+		selected_hit = shctx.item;
+		handle = shctx.handle;
+	}
+
+	obs_sceneitem_t *hit = selected_hit ? selected_hit : item_at_pos(world);
+
+	/* Select on press (empty click clears). */
+	const bool shift = QGuiApplication::keyboardModifiers() & Qt::ShiftModifier;
+	if (!shift) {
+		obs_scene_enum_items(
+			scene,
+			[](obs_scene_t *, obs_sceneitem_t *it, void *) {
+				obs_sceneitem_select(it, false);
+				return true;
+			},
+			nullptr);
+	}
+	if (hit)
+		obs_sceneitem_select(hit, true);
+
+	const bool locked = hit && obs_sceneitem_locked(hit);
+	stretch_item_ = (hit && !locked) ? hit : nullptr;
+	mouse_over_items_ = stretch_item_ != nullptr;
+	if (stretch_item_) {
+		if (handle == MsrItemHandle::None)
+			handle = handle_at_pos(stretch_item_, world);
+		prepare_stretch(stretch_item_, handle);
+		update_hover_cursor(world);
+	} else {
+		stretch_handle_ = MsrItemHandle::None;
+		unsetCursor();
+	}
+
+	if (hit) {
+		const char *n = obs_source_get_name(obs_sceneitem_get_source(hit));
+		emit selection_changed(n ? QString::fromUtf8(n) : QString());
+	} else {
+		emit selection_changed(QString());
+	}
+
+	obs_scene_release(scene);
 	event->accept();
 }
 
@@ -734,29 +1001,32 @@ void MsrPreviewDisplay::mouseMoveEvent(QMouseEvent *event)
 #endif
 	QSize ps = pixel_size(this);
 	update_preview_layout((uint32_t)ps.width(), (uint32_t)ps.height());
-	vec2 world;
-	preview_to_world((float)qt.x(), (float)qt.y(), world);
+	vec2 world = get_mouse_event_pos(qt);
 
 	if (!mouse_down_) {
-		obs_sceneitem_t *hit = item_at_pos(world);
-		MsrItemHandle h = hit ? handle_at_pos(hit, world) : MsrItemHandle::None;
-		if (h != MsrItemHandle::None)
-			setCursor(Qt::SizeFDiagCursor);
-		else if (hit && obs_sceneitem_selected(hit))
-			setCursor(Qt::SizeAllCursor);
-		else
-			unsetCursor();
+		update_hover_cursor(world);
 		event->accept();
 		return;
 	}
 
-	mouse_moved_ = true;
-	if (stretch_handle_ != MsrItemHandle::None) {
+	if (!mouse_moved_) {
+		const float dx = world.x - start_pos_.x;
+		const float dy = world.y - start_pos_.y;
+		if (dx * dx + dy * dy < DRAG_THRESHOLD * DRAG_THRESHOLD) {
+			event->accept();
+			return;
+		}
+		mouse_moved_ = true;
+	}
+
+	if (stretch_handle_ != MsrItemHandle::None && stretch_item_) {
 		if (cropping_)
 			crop_selected(world);
 		else
 			stretch_selected(world);
 	} else if (stretch_item_) {
+		if (cursor().shape() != Qt::SizeAllCursor)
+			setCursor(Qt::SizeAllCursor);
 		move_selected(world);
 	}
 	event->accept();
@@ -766,14 +1036,23 @@ void MsrPreviewDisplay::mouseReleaseEvent(QMouseEvent *event)
 {
 	if (event->button() == Qt::LeftButton) {
 		mouse_down_ = false;
+		mouse_moved_ = false;
+		mouse_over_items_ = false;
 		stretch_item_ = nullptr;
 		stretch_handle_ = MsrItemHandle::None;
 		cropping_ = false;
+		vec2_zero(&last_move_offset_);
 		unsetCursor();
 	}
 	event->accept();
 }
 
+void MsrPreviewDisplay::leaveEvent(QEvent *event)
+{
+	if (!mouse_down_)
+		unsetCursor();
+	QWidget::leaveEvent(event);
+}
 
 void MsrPreviewDisplay::keyPressEvent(QKeyEvent *event)
 {
@@ -867,6 +1146,13 @@ void MsrPreviewDock::build_ui()
 	hint_label_ = new QLabel(QString::fromUtf8(obs_module_text("VerticalPreviewHint")), this);
 	hint_label_->setWordWrap(true);
 	root->addWidget(hint_label_);
+
+	snap_check_ = new QCheckBox(QString::fromUtf8(obs_module_text("VerticalSnap")), this);
+	snap_check_->setChecked(true);
+	root->addWidget(snap_check_);
+	connect(snap_check_, &QCheckBox::toggled, this, &MsrPreviewDock::on_snap_toggled);
+	if (display_)
+		display_->set_snap_enabled(true);
 
 	root->addWidget(new QLabel(QString::fromUtf8(obs_module_text("VerticalSources")), this));
 	source_list_ = new QListWidget(this);
@@ -1015,6 +1301,12 @@ void MsrPreviewDock::on_preview_selection_changed(const QString &name)
 }
 
 void MsrPreviewDock::on_audio_button_clicked() {}
+
+void MsrPreviewDock::on_snap_toggled(bool checked)
+{
+	if (display_)
+		display_->set_snap_enabled(checked);
+}
 
 void MsrPreviewDock::on_move_up()
 {
