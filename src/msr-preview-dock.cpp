@@ -160,14 +160,11 @@ static void get_selection_box_transform(obs_sceneitem_t *item, matrix4 *out)
 	float cx, cy;
 	get_cropped_source_size(item, cx, cy);
 
+	/* Same composition OBS uses when building transforms: out = draw * S(cx,cy).
+	 * Unit square then maps onto the visible source quad (crop + bounds fit + rot). */
 	matrix4 draw;
 	obs_sceneitem_get_draw_transform(item, &draw);
-
-	/* out = draw * S(cx, cy)  so  out*(u,v) = draw*(u*cx, v*cy) */
-	matrix4 scale_m;
-	matrix4_identity(&scale_m);
-	matrix4_scale3f(&scale_m, &scale_m, cx, cy, 1.0f);
-	matrix4_mul(out, &draw, &scale_m);
+	matrix4_scale3f(out, &draw, cx, cy, 1.0f);
 }
 
 /* World-space size of the visible content (tight box). */
@@ -529,18 +526,20 @@ bool MsrPreviewDisplay::draw_selected_cb(obs_scene_t *, obs_sceneitem_t *item, v
 	if (!obs_sceneitem_selected(item) || !obs_sceneitem_visible(item))
 		return true;
 
-	/* Tight box around visible source (draw transform), not full SCALE_INNER bounds. */
-	matrix4 boxTransform;
-	get_selection_box_transform(item, &boxTransform);
+	/* Draw in source-pixel space under draw_transform — identical to how OBS places the item. */
+	float cx, cy;
+	get_cropped_source_size(item, cx, cy);
+	matrix4 draw;
+	obs_sceneitem_get_draw_transform(item, &draw);
 
 	gs_matrix_push();
-	gs_matrix_mul(&boxTransform);
+	gs_matrix_mul(&draw);
 
 	gs_render_start(true);
 	gs_vertex2f(0.0f, 0.0f);
-	gs_vertex2f(0.0f, 1.0f);
-	gs_vertex2f(1.0f, 1.0f);
-	gs_vertex2f(1.0f, 0.0f);
+	gs_vertex2f(0.0f, cy);
+	gs_vertex2f(cx, cy);
+	gs_vertex2f(cx, 0.0f);
 	gs_vertex2f(0.0f, 0.0f);
 	gs_vertbuffer_t *box = gs_render_save();
 
@@ -555,24 +554,24 @@ bool MsrPreviewDisplay::draw_selected_cb(obs_scene_t *, obs_sceneitem_t *item, v
 		gs_draw(GS_LINESTRIP, 0, 0);
 	}
 
-	/* Handles — screen-ish size from visible content dimensions. */
+	/* Handles in source-pixel space (same matrix as outline). */
 	vec2 content = get_item_size(item);
-	float hx = HANDLE_RADIUS / (fabsf(content.x) > 1.0f ? fabsf(content.x) : 1.0f);
-	float hy = HANDLE_RADIUS / (fabsf(content.y) > 1.0f ? fabsf(content.y) : 1.0f);
-	if (hx < 0.012f)
-		hx = 0.012f;
-	if (hy < 0.012f)
-		hy = 0.012f;
-	if (hx > 0.08f)
-		hx = 0.08f;
-	if (hy > 0.08f)
-		hy = 0.08f;
-	auto draw_handle = [&](float u, float v) {
+	float hx = HANDLE_RADIUS / (fabsf(content.x) > 1.0f ? fabsf(content.x) : 1.0f) * cx;
+	float hy = HANDLE_RADIUS / (fabsf(content.y) > 1.0f ? fabsf(content.y) : 1.0f) * cy;
+	if (hx < 1.0f)
+		hx = 1.0f;
+	if (hy < 1.0f)
+		hy = 1.0f;
+	if (hx > cx * 0.08f)
+		hx = cx * 0.08f;
+	if (hy > cy * 0.08f)
+		hy = cy * 0.08f;
+	auto draw_handle = [&](float px, float py) {
 		gs_render_start(true);
-		gs_vertex2f(u - hx, v - hy);
-		gs_vertex2f(u + hx, v - hy);
-		gs_vertex2f(u - hx, v + hy);
-		gs_vertex2f(u + hx, v + hy);
+		gs_vertex2f(px - hx, py - hy);
+		gs_vertex2f(px + hx, py - hy);
+		gs_vertex2f(px - hx, py + hy);
+		gs_vertex2f(px + hx, py + hy);
 		gs_vertbuffer_t *hbuf = gs_render_save();
 		vec4 hc;
 		vec4_set(&hc, 1.0f, 1.0f, 1.0f, 1.0f);
@@ -584,13 +583,13 @@ bool MsrPreviewDisplay::draw_selected_cb(obs_scene_t *, obs_sceneitem_t *item, v
 		gs_vertexbuffer_destroy(hbuf);
 	};
 	draw_handle(0.0f, 0.0f);
-	draw_handle(0.5f, 0.0f);
-	draw_handle(1.0f, 0.0f);
-	draw_handle(0.0f, 0.5f);
-	draw_handle(1.0f, 0.5f);
-	draw_handle(0.0f, 1.0f);
-	draw_handle(0.5f, 1.0f);
-	draw_handle(1.0f, 1.0f);
+	draw_handle(cx * 0.5f, 0.0f);
+	draw_handle(cx, 0.0f);
+	draw_handle(0.0f, cy * 0.5f);
+	draw_handle(cx, cy * 0.5f);
+	draw_handle(0.0f, cy);
+	draw_handle(cx * 0.5f, cy);
+	draw_handle(cx, cy);
 
 	gs_vertexbuffer_destroy(box);
 	gs_matrix_pop();

@@ -19,6 +19,8 @@ the Free Software Foundation; either version 2 of the License, or
 #include <obs-module.h>
 #include <util/platform.h>
 #include <util/config-file.h>
+#include <graphics/matrix4.h>
+#include <graphics/vec3.h>
 
 #include <fstream>
 #include <sstream>
@@ -1384,6 +1386,33 @@ void MsrController::ws_vertical_status(obs_data_t *request_data, obs_data_t *res
 			obs_data_set_bool(row, "selected", obs_sceneitem_selected(item));
 			obs_data_set_int(row, "source_width", (int)obs_source_get_width(src));
 			obs_data_set_int(row, "source_height", (int)obs_source_get_height(src));
+			/* Visible content corners via draw_transform (canvas space). */
+			{
+				matrix4 draw;
+				obs_sceneitem_get_draw_transform(item, &draw);
+				const float sw = (float)obs_source_get_width(src);
+				const float sh = (float)obs_source_get_height(src);
+				vec3 tl, br;
+				vec3_set(&tl, 0.0f, 0.0f, 0.0f);
+				vec3_set(&br, sw, sh, 0.0f);
+				vec3_transform(&tl, &tl, &draw);
+				vec3_transform(&br, &br, &draw);
+				obs_data_set_double(row, "content_x0", tl.x);
+				obs_data_set_double(row, "content_y0", tl.y);
+				obs_data_set_double(row, "content_x1", br.x);
+				obs_data_set_double(row, "content_y1", br.y);
+				matrix4 box;
+				obs_sceneitem_get_box_transform(item, &box);
+				vec3 b0, b1;
+				vec3_set(&b0, 0.0f, 0.0f, 0.0f);
+				vec3_set(&b1, 1.0f, 1.0f, 0.0f);
+				vec3_transform(&b0, &b0, &box);
+				vec3_transform(&b1, &b1, &box);
+				obs_data_set_double(row, "box_x0", b0.x);
+				obs_data_set_double(row, "box_y0", b0.y);
+				obs_data_set_double(row, "box_x1", b1.x);
+				obs_data_set_double(row, "box_y1", b1.y);
+			}
 			obs_data_array_push_back(arr, row);
 			obs_data_release(row);
 			return true;
