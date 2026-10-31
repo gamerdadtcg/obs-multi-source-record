@@ -132,13 +132,79 @@ struct ItemAtPosCtx {
 	obs_sceneitem_t *item;
 };
 
+/* Cropped source base size in source pixels (before item scale / bounds). */
+static void get_cropped_source_size(obs_sceneitem_t *item, float &cx, float &cy)
+{
+	obs_source_t *src = obs_sceneitem_get_source(item);
+	obs_sceneitem_crop crop;
+	obs_sceneitem_get_crop(item, &crop);
+	cx = float(obs_source_get_width(src));
+	cy = float(obs_source_get_height(src));
+	cx -= float(crop.left + crop.right);
+	cy -= float(crop.top + crop.bottom);
+	if (cx < 1.0f)
+		cx = 1.0f;
+	if (cy < 1.0f)
+		cy = 1.0f;
+}
+
+/*
+ * Transform mapping the unit square (0,0)-(1,1) onto the *visible source content*
+ * (draw transform × cropped size). For SCALE_INNER/etc. this is the fitted image,
+ * not the full bounds letterbox — matching what the user sees for "sony".
+ */
+static void get_selection_box_transform(obs_sceneitem_t *item, matrix4 *out)
+{
+	float cx, cy;
+	get_cropped_source_size(item, cx, cy);
+
+	matrix4 draw;
+	obs_sceneitem_get_draw_transform(item, &draw);
+
+	matrix4 scale_m;
+	matrix4_identity(&scale_m);
+	matrix4_scale3f(&scale_m, &scale_m, cx, cy, 1.0f);
+	/* out = draw * scale_m  so  out*(u,v) = draw*(u*cx, v*cy) */
+	matrix4_mul(out, &draw, &scale_m);
+}
+
+/* World-space size of the visible content (tight box). */
+static vec2 get_item_size(obs_sceneitem_t *item)
+{
+	vec2 size;
+	matrix4 sel;
+	get_selection_box_transform(item, &sel);
+	/* Unit-square edges → world length (handles rotation). */
+	vec3 o, x, y;
+	vec3_set(&o, 0.0f, 0.0f, 0.0f);
+	vec3_set(&x, 1.0f, 0.0f, 0.0f);
+	vec3_set(&y, 0.0f, 1.0f, 0.0f);
+	vec3_transform(&o, &o, &sel);
+	vec3_transform(&x, &x, &sel);
+	vec3_transform(&y, &y, &sel);
+	size.x = fabsf(x.x - o.x);
+	size.y = fabsf(y.y - o.y);
+	/* Prefer edge lengths for rotated items */
+	const float wlen = sqrtf((x.x - o.x) * (x.x - o.x) + (x.y - o.y) * (x.y - o.y));
+	const float hlen = sqrtf((y.x - o.x) * (y.x - o.x) + (y.y - o.y) * (y.y - o.y));
+	if (wlen > 1.0f)
+		size.x = wlen;
+	if (hlen > 1.0f)
+		size.y = hlen;
+	if (size.x < 1.0f)
+		size.x = 1.0f;
+	if (size.y < 1.0f)
+		size.y = 1.0f;
+	return size;
+}
+
 bool item_at_pos_cb(obs_scene_t *, obs_sceneitem_t *item, void *param)
 {
 	auto *ctx = static_cast<ItemAtPosCtx *>(param);
 	if (!obs_sceneitem_visible(item))
 		return true;
 	matrix4 box;
-	obs_sceneitem_get_box_transform(item, &box);
+	get_selection_box_transform(item, &box);
 	vec3 pos3, tpos;
 	vec3_set(&pos3, ctx->pos->x, ctx->pos->y, 0.0f);
 	matrix4 inv;
@@ -149,24 +215,6 @@ bool item_at_pos_cb(obs_scene_t *, obs_sceneitem_t *item, void *param)
 		/* Keep going so the topmost item wins (enum is bottom→top). */
 	}
 	return true;
-}
-
-static vec2 get_item_size(obs_sceneitem_t *item)
-{
-	vec2 size;
-	obs_bounds_type bt = obs_sceneitem_get_bounds_type(item);
-	if (bt != OBS_BOUNDS_NONE) {
-		obs_sceneitem_get_bounds(item, &size);
-	} else {
-		obs_source_t *src = obs_sceneitem_get_source(item);
-		obs_sceneitem_crop crop;
-		obs_sceneitem_get_crop(item, &crop);
-		vec2 scale;
-		obs_sceneitem_get_scale(item, &scale);
-		size.x = float(obs_source_get_width(src) - crop.left - crop.right) * scale.x;
-		size.y = float(obs_source_get_height(src) - crop.top - crop.bottom) * scale.y;
-	}
-	return size;
 }
 
 } // namespace
@@ -479,8 +527,9 @@ bool MsrPreviewDisplay::draw_selected_cb(obs_scene_t *, obs_sceneitem_t *item, v
 	if (!obs_sceneitem_selected(item) || !obs_sceneitem_visible(item))
 		return true;
 
+	/* Tight box around visible source (draw transform), not full SCALE_INNER bounds. */
 	matrix4 boxTransform;
-	obs_sceneitem_get_box_transform(item, &boxTransform);
+	get_selection_box_transform(item, &boxTransform);
 
 	gs_matrix_push();
 	gs_matrix_mul(&boxTransform);
@@ -504,11 +553,10 @@ bool MsrPreviewDisplay::draw_selected_cb(obs_scene_t *, obs_sceneitem_t *item, v
 		gs_draw(GS_LINESTRIP, 0, 0);
 	}
 
-	/* Handles — fixed-ish screen size via inverse box scale (OBS-style grab squares). */
-	vec2 box_scale;
-	obs_sceneitem_get_box_scale(item, &box_scale);
-	float hx = HANDLE_RADIUS / (fabsf(box_scale.x) > 1.0f ? fabsf(box_scale.x) : 1.0f);
-	float hy = HANDLE_RADIUS / (fabsf(box_scale.y) > 1.0f ? fabsf(box_scale.y) : 1.0f);
+	/* Handles — screen-ish size from visible content dimensions. */
+	vec2 content = get_item_size(item);
+	float hx = HANDLE_RADIUS / (fabsf(content.x) > 1.0f ? fabsf(content.x) : 1.0f);
+	float hy = HANDLE_RADIUS / (fabsf(content.y) > 1.0f ? fabsf(content.y) : 1.0f);
 	if (hx < 0.012f)
 		hx = 0.012f;
 	if (hy < 0.012f)
@@ -580,7 +628,7 @@ MsrItemHandle MsrPreviewDisplay::handle_at_pos(obs_sceneitem_t *item, const vec2
 		return MsrItemHandle::None;
 
 	matrix4 box;
-	obs_sceneitem_get_box_transform(item, &box);
+	get_selection_box_transform(item, &box);
 	const float radius = HANDLE_SEL_RADIUS / (preview_scale_ > 0.001f ? preview_scale_ : 1.0f);
 
 	struct Probe {
@@ -623,9 +671,10 @@ void MsrPreviewDisplay::prepare_stretch(obs_sceneitem_t *item, MsrItemHandle han
 	obs_sceneitem_get_crop(item, &start_crop_);
 
 	matrix4 boxTransform;
-	obs_sceneitem_get_box_transform(item, &boxTransform);
+	get_selection_box_transform(item, &boxTransform);
 	vec3 itemUL;
-	vec3_from_vec4(&itemUL, &boxTransform.t);
+	vec3_set(&itemUL, 0.0f, 0.0f, 0.0f);
+	vec3_transform(&itemUL, &itemUL, &boxTransform);
 	const float itemRot = obs_sceneitem_get_rot(item);
 
 	matrix4_identity(&item_to_screen_);
