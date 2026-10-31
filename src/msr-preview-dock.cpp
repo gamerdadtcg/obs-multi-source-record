@@ -2,6 +2,9 @@
 Multi Source Record for OBS Studio
 Copyright (C) 2026 Travvvman
 
+Interactive preview patterns adapted from OBS Studio / Aitum Vertical Canvas
+(GPL-2.0) — simplified for MSR's linked vertical canvas.
+
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation; either version 2 of the License, or
@@ -15,24 +18,25 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
-#include <QComboBox>
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QPushButton>
 #include <QLabel>
-#include <QInputDialog>
 #include <QTimer>
 #include <QShowEvent>
 #include <QHideEvent>
 #include <QResizeEvent>
+#include <QMouseEvent>
 #include <QWindow>
-#include <QDialog>
-#include <QDialogButtonBox>
-#include <QLineEdit>
 #include <QSizePolicy>
+#include <QGuiApplication>
+#include <cmath>
+#include <algorithm>
 
 #include <obs-module.h>
 #include <obs-frontend-api.h>
+#include <graphics/matrix4.h>
+#include <graphics/vec3.h>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -46,6 +50,8 @@ the Free Software Foundation; either version 2 of the License, or
 #endif
 
 namespace {
+
+constexpr float HANDLE_RADIUS = 10.0f;
 
 inline QSize pixel_size(QWidget *w)
 {
@@ -70,25 +76,6 @@ inline void get_scale_and_center(int baseCX, int baseCY, int windowCX, int windo
 	y = windowCY / 2 - newCY / 2;
 }
 
-struct EnumSourcesCtx {
-	QStringList *out;
-};
-
-bool enum_video_sources_cb(void *data, obs_source_t *source)
-{
-	auto *ctx = static_cast<EnumSourcesCtx *>(data);
-	const uint32_t flags = obs_source_get_output_flags(source);
-	if ((flags & OBS_SOURCE_VIDEO) == 0)
-		return true;
-	/* Skip scenes — add concrete sources only for vertical. */
-	if (obs_source_get_type(source) == OBS_SOURCE_TYPE_SCENE)
-		return true;
-	const char *name = obs_source_get_name(source);
-	if (name && *name)
-		ctx->out->push_back(QString::fromUtf8(name));
-	return true;
-}
-
 struct EnumItemsCtx {
 	QListWidget *list;
 };
@@ -103,10 +90,50 @@ bool enum_scene_items_cb(obs_scene_t *, obs_sceneitem_t *item, void *param)
 	auto *row = new QListWidgetItem(QString::fromUtf8(name));
 	row->setFlags(row->flags() | Qt::ItemIsUserCheckable | Qt::ItemIsEnabled | Qt::ItemIsSelectable);
 	row->setCheckState(obs_sceneitem_visible(item) ? Qt::Checked : Qt::Unchecked);
-	/* Insert at top so list order matches OBS top-to-bottom (last drawn first in enum?).
-	 * obs_scene_enum_items walks bottom→top; prepend so top of list = top of stack. */
 	ctx->list->insertItem(0, row);
 	return true;
+}
+
+struct ItemAtPosCtx {
+	const vec2 *pos;
+	obs_sceneitem_t *item;
+};
+
+bool item_at_pos_cb(obs_scene_t *, obs_sceneitem_t *item, void *param)
+{
+	auto *ctx = static_cast<ItemAtPosCtx *>(param);
+	if (!obs_sceneitem_visible(item))
+		return true;
+	matrix4 box;
+	obs_sceneitem_get_box_transform(item, &box);
+	vec3 pos3, tpos;
+	vec3_set(&pos3, ctx->pos->x, ctx->pos->y, 0.0f);
+	matrix4 inv;
+	matrix4_inv(&inv, &box);
+	vec3_transform(&tpos, &pos3, &inv);
+	if (tpos.x >= 0.0f && tpos.x <= 1.0f && tpos.y >= 0.0f && tpos.y <= 1.0f) {
+		ctx->item = item;
+		/* Keep going so the topmost item wins (enum is bottom→top). */
+	}
+	return true;
+}
+
+static vec2 get_item_size(obs_sceneitem_t *item)
+{
+	vec2 size;
+	obs_bounds_type bt = obs_sceneitem_get_bounds_type(item);
+	if (bt != OBS_BOUNDS_NONE) {
+		obs_sceneitem_get_bounds(item, &size);
+	} else {
+		obs_source_t *src = obs_sceneitem_get_source(item);
+		obs_sceneitem_crop crop;
+		obs_sceneitem_get_crop(item, &crop);
+		vec2 scale;
+		obs_sceneitem_get_scale(item, &scale);
+		size.x = float(obs_source_get_width(src) - crop.left - crop.right) * scale.x;
+		size.y = float(obs_source_get_height(src) - crop.top - crop.bottom) * scale.y;
+	}
+	return size;
 }
 
 } // namespace
@@ -123,6 +150,10 @@ MsrPreviewDisplay::MsrPreviewDisplay(QWidget *parent) : QWidget(parent)
 	setAttribute(Qt::WA_NativeWindow);
 	setMinimumSize(90, 160);
 	setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+	setMouseTracking(true);
+	setFocusPolicy(Qt::ClickFocus);
+	matrix4_identity(&item_to_screen_);
+	matrix4_identity(&screen_to_item_);
 }
 
 MsrPreviewDisplay::~MsrPreviewDisplay()
@@ -142,6 +173,7 @@ void MsrPreviewDisplay::ensure_canvas()
 		h = s.vertical_height;
 	}
 	vc->ensure((uint32_t)w, (uint32_t)h);
+	vc->follow_main_scene();
 }
 
 void MsrPreviewDisplay::create_display()
@@ -149,7 +181,7 @@ void MsrPreviewDisplay::create_display()
 	if (display_)
 		return;
 	if (!windowHandle())
-		winId(); /* force native window */
+		winId();
 	if (!windowHandle() || !windowHandle()->isExposed())
 		return;
 
@@ -178,7 +210,6 @@ void MsrPreviewDisplay::create_display()
 	info.window.display = obs_get_nix_platform_display();
 #endif
 
-	/* Dark clear so an empty scene is distinct from a failed display. */
 	display_ = obs_display_create(&info, 0xFF1A1A1A);
 	if (!display_) {
 		obs_log(LOG_WARNING, "vertical preview display create failed");
@@ -212,7 +243,6 @@ void MsrPreviewDisplay::showEvent(QShowEvent *event)
 {
 	QWidget::showEvent(event);
 	ensure_canvas();
-	/* Defer until the native window is exposed (dock may show before expose). */
 	QTimer::singleShot(0, this, [this]() { create_display(); });
 	QTimer::singleShot(150, this, [this]() {
 		if (!display_)
@@ -247,9 +277,26 @@ QPaintEngine *MsrPreviewDisplay::paintEngine() const
 	return nullptr;
 }
 
+void MsrPreviewDisplay::update_preview_layout(uint32_t cx, uint32_t cy)
+{
+	auto *vc = MsrVerticalCanvas::instance();
+	world_cx_ = vc && vc->width() ? vc->width() : 1080;
+	world_cy_ = vc && vc->height() ? vc->height() : 1920;
+	get_scale_and_center((int)world_cx_, (int)world_cy_, (int)cx, (int)cy, preview_x_, preview_y_, preview_scale_);
+}
+
+void MsrPreviewDisplay::preview_to_world(float px, float py, vec2 &out) const
+{
+	const float dpr = (float)devicePixelRatioF();
+	px *= dpr;
+	py *= dpr;
+	out.x = (px - (float)preview_x_) / preview_scale_;
+	out.y = (py - (float)preview_y_) / preview_scale_;
+}
+
 void MsrPreviewDisplay::draw_preview(void *param, uint32_t cx, uint32_t cy)
 {
-	UNUSED_PARAMETER(param);
+	auto *self = static_cast<MsrPreviewDisplay *>(param);
 	auto *vc = MsrVerticalCanvas::instance();
 	if (!vc || !vc->ready())
 		return;
@@ -258,22 +305,9 @@ void MsrPreviewDisplay::draw_preview(void *param, uint32_t cx, uint32_t cy)
 	if (!program)
 		return;
 
-	uint32_t sourceCX = vc->width();
-	uint32_t sourceCY = vc->height();
-	if (sourceCX < 1)
-		sourceCX = obs_source_get_width(program);
-	if (sourceCY < 1)
-		sourceCY = obs_source_get_height(program);
-	if (sourceCX < 1)
-		sourceCX = 1;
-	if (sourceCY < 1)
-		sourceCY = 1;
-
-	int x, y;
-	float scale;
-	get_scale_and_center((int)sourceCX, (int)sourceCY, (int)cx, (int)cy, x, y, scale);
-	int newCX = (int)(scale * float(sourceCX));
-	int newCY = (int)(scale * float(sourceCY));
+	self->update_preview_layout(cx, cy);
+	int newCX = (int)(self->preview_scale_ * float(self->world_cx_));
+	int newCY = (int)(self->preview_scale_ * float(self->world_cy_));
 	if (newCX < 1)
 		newCX = 1;
 	if (newCY < 1)
@@ -283,17 +317,350 @@ void MsrPreviewDisplay::draw_preview(void *param, uint32_t cx, uint32_t cy)
 	gs_projection_push();
 
 	const bool previous = gs_set_linear_srgb(true);
-	gs_ortho(0.0f, float(sourceCX), 0.0f, float(sourceCY), -100.0f, 100.0f);
-	gs_set_viewport(x, y, newCX, newCY);
+	gs_ortho(0.0f, float(self->world_cx_), 0.0f, float(self->world_cy_), -100.0f, 100.0f);
+	gs_set_viewport(self->preview_x_, self->preview_y_, newCX, newCY);
 
-	/* Render the program scene source — reliable for secondary-canvas docks. */
 	obs_source_video_render(program);
+	self->draw_selection_overlay();
 
 	gs_set_linear_srgb(previous);
 	gs_projection_pop();
 	gs_viewport_pop();
 
 	obs_source_release(program);
+}
+
+bool MsrPreviewDisplay::draw_selected_cb(obs_scene_t *, obs_sceneitem_t *item, void *param)
+{
+	UNUSED_PARAMETER(param);
+	if (!obs_sceneitem_selected(item) || !obs_sceneitem_visible(item))
+		return true;
+
+	matrix4 boxTransform;
+	obs_sceneitem_get_box_transform(item, &boxTransform);
+
+	gs_matrix_push();
+	gs_matrix_mul(&boxTransform);
+
+	gs_render_start(true);
+	gs_vertex2f(0.0f, 0.0f);
+	gs_vertex2f(0.0f, 1.0f);
+	gs_vertex2f(1.0f, 1.0f);
+	gs_vertex2f(1.0f, 0.0f);
+	gs_vertex2f(0.0f, 0.0f);
+	gs_vertbuffer_t *box = gs_render_save();
+
+	gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
+	gs_eparam_t *color = gs_effect_get_param_by_name(solid, "color");
+	vec4 outline;
+	vec4_set(&outline, 0.82f, 0.82f, 0.82f, 1.0f);
+	gs_effect_set_vec4(color, &outline);
+
+	while (gs_effect_loop(solid, "Solid")) {
+		gs_load_vertexbuffer(box);
+		gs_draw(GS_LINESTRIP, 0, 0);
+	}
+
+	/* Corner handles */
+	const float hs = 0.04f;
+	auto draw_handle = [&](float hx, float hy) {
+		gs_render_start(true);
+		gs_vertex2f(hx - hs, hy - hs);
+		gs_vertex2f(hx - hs, hy + hs);
+		gs_vertex2f(hx + hs, hy + hs);
+		gs_vertex2f(hx + hs, hy - hs);
+		gs_vertex2f(hx - hs, hy - hs);
+		gs_vertbuffer_t *hbuf = gs_render_save();
+		vec4 hc;
+		vec4_set(&hc, 1.0f, 1.0f, 1.0f, 1.0f);
+		gs_effect_set_vec4(color, &hc);
+		while (gs_effect_loop(solid, "Solid")) {
+			gs_load_vertexbuffer(hbuf);
+			gs_draw(GS_LINESTRIP, 0, 0);
+		}
+		gs_vertexbuffer_destroy(hbuf);
+	};
+	draw_handle(0.0f, 0.0f);
+	draw_handle(0.5f, 0.0f);
+	draw_handle(1.0f, 0.0f);
+	draw_handle(0.0f, 0.5f);
+	draw_handle(1.0f, 0.5f);
+	draw_handle(0.0f, 1.0f);
+	draw_handle(0.5f, 1.0f);
+	draw_handle(1.0f, 1.0f);
+
+	gs_vertexbuffer_destroy(box);
+	gs_matrix_pop();
+	return true;
+}
+
+void MsrPreviewDisplay::draw_selection_overlay()
+{
+	auto *vc = MsrVerticalCanvas::instance();
+	if (!vc)
+		return;
+	obs_scene_t *scene = vc->program_scene();
+	if (!scene)
+		return;
+	gs_load_vertexbuffer(nullptr);
+	obs_scene_enum_items(scene, draw_selected_cb, this);
+	obs_scene_release(scene);
+}
+
+obs_sceneitem_t *MsrPreviewDisplay::item_at_pos(const vec2 &pos)
+{
+	auto *vc = MsrVerticalCanvas::instance();
+	if (!vc)
+		return nullptr;
+	obs_scene_t *scene = vc->program_scene();
+	if (!scene)
+		return nullptr;
+	ItemAtPosCtx ctx{&pos, nullptr};
+	obs_scene_enum_items(scene, item_at_pos_cb, &ctx);
+	obs_scene_release(scene);
+	return ctx.item;
+}
+
+MsrItemHandle MsrPreviewDisplay::handle_at_pos(obs_sceneitem_t *item, const vec2 &pos)
+{
+	if (!item || !obs_sceneitem_selected(item))
+		return MsrItemHandle::None;
+
+	matrix4 box;
+	obs_sceneitem_get_box_transform(item, &box);
+	const float radius = HANDLE_RADIUS / (preview_scale_ > 0.001f ? preview_scale_ : 1.0f);
+
+	struct Probe {
+		float u, v;
+		MsrItemHandle h;
+	};
+	const Probe probes[] = {
+		{0.0f, 0.0f, MsrItemHandle::TopLeft},      {0.5f, 0.0f, MsrItemHandle::TopCenter},
+		{1.0f, 0.0f, MsrItemHandle::TopRight},     {0.0f, 0.5f, MsrItemHandle::CenterLeft},
+		{1.0f, 0.5f, MsrItemHandle::CenterRight},  {0.0f, 1.0f, MsrItemHandle::BottomLeft},
+		{0.5f, 1.0f, MsrItemHandle::BottomCenter}, {1.0f, 1.0f, MsrItemHandle::BottomRight},
+	};
+
+	MsrItemHandle best = MsrItemHandle::None;
+	float best_d = radius * radius;
+	for (const auto &p : probes) {
+		vec3 corner, world;
+		vec3_set(&corner, p.u, p.v, 0.0f);
+		vec3_transform(&world, &corner, &box);
+		float dx = world.x - pos.x;
+		float dy = world.y - pos.y;
+		float d = dx * dx + dy * dy;
+		if (d <= best_d) {
+			best_d = d;
+			best = p.h;
+		}
+	}
+	return best;
+}
+
+void MsrPreviewDisplay::move_selected(const vec2 &pos)
+{
+	if (!stretch_item_)
+		return;
+	vec2 delta;
+	vec2_sub(&delta, &pos, &last_pos_);
+	vec2 cur;
+	obs_sceneitem_get_pos(stretch_item_, &cur);
+	cur.x = std::round(cur.x + delta.x);
+	cur.y = std::round(cur.y + delta.y);
+	obs_sceneitem_set_pos(stretch_item_, &cur);
+	last_pos_ = pos;
+}
+
+void MsrPreviewDisplay::stretch_selected(const vec2 &pos)
+{
+	if (!stretch_item_ || stretch_handle_ == MsrItemHandle::None)
+		return;
+
+	const uint32_t flags = (uint32_t)stretch_handle_;
+	vec2 size = stretch_start_size_;
+	vec2 p = stretch_start_pos_;
+
+	float dx = pos.x - start_pos_.x;
+	float dy = pos.y - start_pos_.y;
+
+	if (flags & (uint32_t)MsrItemHandle::Left) {
+		p.x = stretch_start_pos_.x + dx;
+		size.x = stretch_start_size_.x - dx;
+	} else if (flags & (uint32_t)MsrItemHandle::Right) {
+		size.x = stretch_start_size_.x + dx;
+	}
+	if (flags & (uint32_t)MsrItemHandle::Top) {
+		p.y = stretch_start_pos_.y + dy;
+		size.y = stretch_start_size_.y - dy;
+	} else if (flags & (uint32_t)MsrItemHandle::Bottom) {
+		size.y = stretch_start_size_.y + dy;
+	}
+
+	if (size.x < 2.0f)
+		size.x = 2.0f;
+	if (size.y < 2.0f)
+		size.y = 2.0f;
+
+	obs_sceneitem_set_bounds_type(stretch_item_, OBS_BOUNDS_STRETCH);
+	obs_sceneitem_set_bounds_alignment(stretch_item_, OBS_ALIGN_TOP | OBS_ALIGN_LEFT);
+	obs_sceneitem_set_alignment(stretch_item_, OBS_ALIGN_TOP | OBS_ALIGN_LEFT);
+	obs_sceneitem_set_bounds(stretch_item_, &size);
+	obs_sceneitem_set_pos(stretch_item_, &p);
+}
+
+void MsrPreviewDisplay::crop_selected(const vec2 &pos)
+{
+	if (!stretch_item_ || stretch_handle_ == MsrItemHandle::None)
+		return;
+	obs_source_t *src = obs_sceneitem_get_source(stretch_item_);
+	const float sw = float(obs_source_get_width(src));
+	const float sh = float(obs_source_get_height(src));
+	if (sw < 1.0f || sh < 1.0f)
+		return;
+
+	vec2 size = get_item_size(stretch_item_);
+	float dx = pos.x - start_pos_.x;
+	float dy = pos.y - start_pos_.y;
+	const uint32_t flags = (uint32_t)stretch_handle_;
+
+	obs_sceneitem_crop crop = start_crop_;
+	auto clamp_crop = [&](int &v, float maxv) {
+		if (v < 0)
+			v = 0;
+		if ((float)v > maxv - 2.0f)
+			v = (int)(maxv - 2.0f);
+	};
+
+	if (flags & (uint32_t)MsrItemHandle::Left) {
+		int add = (int)std::round(dx * (sw / (size.x > 1 ? size.x : 1)));
+		crop.left = start_crop_.left + add;
+		clamp_crop(crop.left, sw - crop.right);
+	}
+	if (flags & (uint32_t)MsrItemHandle::Right) {
+		int add = (int)std::round(-dx * (sw / (size.x > 1 ? size.x : 1)));
+		crop.right = start_crop_.right + add;
+		clamp_crop(crop.right, sw - crop.left);
+	}
+	if (flags & (uint32_t)MsrItemHandle::Top) {
+		int add = (int)std::round(dy * (sh / (size.y > 1 ? size.y : 1)));
+		crop.top = start_crop_.top + add;
+		clamp_crop(crop.top, sh - crop.bottom);
+	}
+	if (flags & (uint32_t)MsrItemHandle::Bottom) {
+		int add = (int)std::round(-dy * (sh / (size.y > 1 ? size.y : 1)));
+		crop.bottom = start_crop_.bottom + add;
+		clamp_crop(crop.bottom, sh - crop.top);
+	}
+	obs_sceneitem_set_crop(stretch_item_, &crop);
+}
+
+void MsrPreviewDisplay::mousePressEvent(QMouseEvent *event)
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+	const QPointF qt = event->position();
+#else
+	const QPointF qt = event->localPos();
+#endif
+	if (event->button() != Qt::LeftButton) {
+		QWidget::mousePressEvent(event);
+		return;
+	}
+
+	QSize ps = pixel_size(this);
+	update_preview_layout((uint32_t)ps.width(), (uint32_t)ps.height());
+
+	vec2 world;
+	preview_to_world((float)qt.x(), (float)qt.y(), world);
+	start_pos_ = world;
+	last_pos_ = world;
+	mouse_down_ = true;
+	mouse_moved_ = false;
+	cropping_ = (QGuiApplication::keyboardModifiers() & Qt::AltModifier);
+
+	/* Clear selection then select clicked item (unless shift). */
+	auto *vc = MsrVerticalCanvas::instance();
+	obs_scene_t *scene = vc ? vc->program_scene() : nullptr;
+	if (scene) {
+		const bool shift = QGuiApplication::keyboardModifiers() & Qt::ShiftModifier;
+		if (!shift) {
+			struct ClearCtx {
+			} clear;
+			obs_scene_enum_items(
+				scene,
+				[](obs_scene_t *, obs_sceneitem_t *it, void *) {
+					obs_sceneitem_select(it, false);
+					return true;
+				},
+				&clear);
+		}
+		obs_sceneitem_t *hit = item_at_pos(world);
+		if (hit)
+			obs_sceneitem_select(hit, true);
+
+		stretch_item_ = hit;
+		stretch_handle_ = hit ? handle_at_pos(hit, world) : MsrItemHandle::None;
+		if (stretch_item_) {
+			stretch_start_size_ = get_item_size(stretch_item_);
+			obs_sceneitem_get_pos(stretch_item_, &stretch_start_pos_);
+			obs_sceneitem_get_crop(stretch_item_, &start_crop_);
+			if (stretch_handle_ != MsrItemHandle::None)
+				setCursor(Qt::SizeFDiagCursor);
+			else
+				setCursor(Qt::SizeAllCursor);
+		}
+		obs_scene_release(scene);
+	}
+	event->accept();
+}
+
+void MsrPreviewDisplay::mouseMoveEvent(QMouseEvent *event)
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+	const QPointF qt = event->position();
+#else
+	const QPointF qt = event->localPos();
+#endif
+	QSize ps = pixel_size(this);
+	update_preview_layout((uint32_t)ps.width(), (uint32_t)ps.height());
+	vec2 world;
+	preview_to_world((float)qt.x(), (float)qt.y(), world);
+
+	if (!mouse_down_) {
+		obs_sceneitem_t *hit = item_at_pos(world);
+		MsrItemHandle h = hit ? handle_at_pos(hit, world) : MsrItemHandle::None;
+		if (h != MsrItemHandle::None)
+			setCursor(Qt::SizeFDiagCursor);
+		else if (hit && obs_sceneitem_selected(hit))
+			setCursor(Qt::SizeAllCursor);
+		else
+			unsetCursor();
+		event->accept();
+		return;
+	}
+
+	mouse_moved_ = true;
+	if (stretch_handle_ != MsrItemHandle::None) {
+		if (cropping_)
+			crop_selected(world);
+		else
+			stretch_selected(world);
+	} else if (stretch_item_) {
+		move_selected(world);
+	}
+	event->accept();
+}
+
+void MsrPreviewDisplay::mouseReleaseEvent(QMouseEvent *event)
+{
+	if (event->button() == Qt::LeftButton) {
+		mouse_down_ = false;
+		stretch_item_ = nullptr;
+		stretch_handle_ = MsrItemHandle::None;
+		cropping_ = false;
+		unsetCursor();
+	}
+	event->accept();
 }
 
 /* ---- MsrPreviewDock ----------------------------------------------------- */
@@ -312,19 +679,12 @@ void MsrPreviewDock::build_ui()
 	root->setSpacing(6);
 
 	auto *scene_row = new QHBoxLayout();
-	scene_row->addWidget(new QLabel(QString::fromUtf8(obs_module_text("VerticalScene")), this));
-	scene_combo_ = new QComboBox(this);
-	scene_combo_->setMinimumWidth(100);
-	scene_row->addWidget(scene_combo_, 1);
-	auto *new_scene = new QPushButton(QString::fromUtf8(obs_module_text("VerticalNewScene")), this);
+	follow_label_ = new QLabel(QString::fromUtf8(obs_module_text("VerticalFollowing")), this);
+	follow_label_->setWordWrap(true);
+	scene_row->addWidget(follow_label_, 1);
 	auto *refresh = new QPushButton(QString::fromUtf8(obs_module_text("VerticalRefresh")), this);
-	scene_row->addWidget(new_scene);
 	scene_row->addWidget(refresh);
 	root->addLayout(scene_row);
-
-	connect(scene_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-		&MsrPreviewDock::on_scene_changed);
-	connect(new_scene, &QPushButton::clicked, this, &MsrPreviewDock::on_new_scene);
 	connect(refresh, &QPushButton::clicked, this, &MsrPreviewDock::refresh_all);
 
 	display_ = new MsrPreviewDisplay(this);
@@ -342,17 +702,14 @@ void MsrPreviewDock::build_ui()
 	connect(source_list_, &QListWidget::itemChanged, this, &MsrPreviewDock::on_visibility_toggled);
 
 	auto *btn_row = new QHBoxLayout();
-	auto *add_btn = new QPushButton(QString::fromUtf8(obs_module_text("VerticalAddSource")), this);
 	auto *up_btn = new QPushButton(QString::fromUtf8(obs_module_text("VerticalMoveUp")), this);
 	auto *down_btn = new QPushButton(QString::fromUtf8(obs_module_text("VerticalMoveDown")), this);
 	auto *fit_btn = new QPushButton(QString::fromUtf8(obs_module_text("VerticalFit")), this);
-	btn_row->addWidget(add_btn);
 	btn_row->addWidget(up_btn);
 	btn_row->addWidget(down_btn);
 	btn_row->addWidget(fit_btn);
 	root->addLayout(btn_row);
 
-	connect(add_btn, &QPushButton::clicked, this, &MsrPreviewDock::on_add_source);
 	connect(up_btn, &QPushButton::clicked, this, &MsrPreviewDock::on_move_up);
 	connect(down_btn, &QPushButton::clicked, this, &MsrPreviewDock::on_move_down);
 	connect(fit_btn, &QPushButton::clicked, this, &MsrPreviewDock::on_fit_selected);
@@ -370,40 +727,26 @@ void MsrPreviewDock::ensure_canvas()
 		h = s.vertical_height;
 	}
 	vc->ensure((uint32_t)w, (uint32_t)h);
+	vc->follow_main_scene();
 }
 
 void MsrPreviewDock::refresh_all()
 {
 	ensure_canvas();
-	rebuild_scene_combo();
+	if (follow_label_) {
+		auto *vc = MsrVerticalCanvas::instance();
+		const std::string name = vc ? vc->followed_scene_name() : std::string();
+		follow_label_->setText(QString::fromUtf8(obs_module_text("VerticalFollowing")).arg(
+			QString::fromStdString(name.empty() ? "?" : name)));
+	}
 	rebuild_source_list();
 	if (display_)
 		display_->refresh_display();
 }
 
-void MsrPreviewDock::rebuild_scene_combo()
+void MsrPreviewDock::on_main_scene_changed()
 {
-	auto *vc = MsrVerticalCanvas::instance();
-	if (!vc || !scene_combo_)
-		return;
-	updating_ui_ = true;
-	const QString current = scene_combo_->currentData().toString();
-	scene_combo_->clear();
-	for (const auto &name : vc->list_scenes()) {
-		scene_combo_->addItem(QString::fromStdString(name), QString::fromStdString(name));
-	}
-	obs_source_t *prog = vc->program_source();
-	QString prog_name;
-	if (prog) {
-		prog_name = QString::fromUtf8(obs_source_get_name(prog));
-		obs_source_release(prog);
-	}
-	int idx = scene_combo_->findData(prog_name.isEmpty() ? current : prog_name);
-	if (idx < 0 && scene_combo_->count() > 0)
-		idx = 0;
-	if (idx >= 0)
-		scene_combo_->setCurrentIndex(idx);
-	updating_ui_ = false;
+	refresh_all();
 }
 
 void MsrPreviewDock::rebuild_source_list()
@@ -436,10 +779,8 @@ void MsrPreviewDock::rebuild_source_list()
 		}
 	}
 	updating_ui_ = false;
-
-	if (hint_label_) {
+	if (hint_label_)
 		hint_label_->setVisible(source_list_->count() == 0);
-	}
 }
 
 QString MsrPreviewDock::selected_source_name() const
@@ -448,65 +789,6 @@ QString MsrPreviewDock::selected_source_name() const
 		return {};
 	auto *item = source_list_->currentItem();
 	return item ? item->text() : QString();
-}
-
-void MsrPreviewDock::on_scene_changed(int)
-{
-	if (updating_ui_ || !scene_combo_)
-		return;
-	auto *vc = MsrVerticalCanvas::instance();
-	if (!vc)
-		return;
-	const QString name = scene_combo_->currentData().toString();
-	if (name.isEmpty())
-		return;
-	vc->set_program_scene(name.toStdString());
-	rebuild_source_list();
-	if (display_)
-		display_->refresh_display();
-}
-
-void MsrPreviewDock::on_new_scene()
-{
-	bool ok = false;
-	const QString name = QInputDialog::getText(this, QString::fromUtf8(obs_module_text("VerticalNewScene")),
-						   QString::fromUtf8(obs_module_text("VerticalSceneName")),
-						   QLineEdit::Normal, QStringLiteral("Vertical"), &ok);
-	if (!ok || name.trimmed().isEmpty())
-		return;
-	auto *vc = MsrVerticalCanvas::instance();
-	if (!vc)
-		return;
-	ensure_canvas();
-	if (!vc->create_scene(name.trimmed().toStdString()))
-		return;
-	vc->set_program_scene(name.trimmed().toStdString());
-	refresh_all();
-}
-
-void MsrPreviewDock::on_add_source()
-{
-	QStringList names;
-	EnumSourcesCtx ctx{&names};
-	obs_enum_sources(enum_video_sources_cb, &ctx);
-	names.sort(Qt::CaseInsensitive);
-	if (names.isEmpty())
-		return;
-
-	bool ok = false;
-	const QString pick = QInputDialog::getItem(this, QString::fromUtf8(obs_module_text("VerticalAddSource")),
-						   QString::fromUtf8(obs_module_text("VerticalPickSource")), names, 0,
-						   false, &ok);
-	if (!ok || pick.isEmpty())
-		return;
-	auto *vc = MsrVerticalCanvas::instance();
-	if (!vc)
-		return;
-	ensure_canvas();
-	vc->add_existing_source(pick.toStdString());
-	rebuild_source_list();
-	if (display_)
-		display_->refresh_display();
 }
 
 void MsrPreviewDock::on_visibility_toggled(QListWidgetItem *item)

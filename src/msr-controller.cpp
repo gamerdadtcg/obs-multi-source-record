@@ -1341,6 +1341,7 @@ void MsrController::ws_vertical_status(obs_data_t *request_data, obs_data_t *res
 		return;
 	obs_data_set_int(response_data, "width", vc->width());
 	obs_data_set_int(response_data, "height", vc->height());
+	obs_data_set_string(response_data, "followed_scene", vc->followed_scene_name().c_str());
 	obs_data_array_t *scenes = obs_data_array_create();
 	for (const auto &n : vc->list_scenes()) {
 		obs_data_t *item = obs_data_create();
@@ -1366,6 +1367,12 @@ void MsrController::ws_vertical_status(obs_data_t *request_data, obs_data_t *res
 			obs_data_t *row = obs_data_create();
 			obs_data_set_string(row, "name", obs_source_get_name(src));
 			obs_data_set_bool(row, "visible", obs_sceneitem_visible(item));
+			vec2 pos; obs_sceneitem_get_pos(item, &pos);
+			obs_data_set_double(row, "pos_x", pos.x);
+			obs_data_set_double(row, "pos_y", pos.y);
+			vec2 bounds; obs_sceneitem_get_bounds(item, &bounds);
+			obs_data_set_double(row, "bounds_x", bounds.x);
+			obs_data_set_double(row, "bounds_y", bounds.y);
 			obs_data_array_push_back(arr, row);
 			obs_data_release(row);
 			return true;

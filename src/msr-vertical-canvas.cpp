@@ -14,6 +14,10 @@ the Free Software Foundation; either version 2 of the License, or
 #include <obs-frontend-api.h>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <string>
+#include <unordered_set>
+#include <vector>
 
 MsrVerticalCanvas *MsrVerticalCanvas::instance_ = nullptr;
 
@@ -36,6 +40,7 @@ void MsrVerticalCanvas::destroy()
 
 MsrVerticalCanvas::~MsrVerticalCanvas()
 {
+	detach_main_signals();
 	std::lock_guard<std::mutex> lock(mutex_);
 	if (canvas_) {
 		/* Leave the canvas in OBS so Travis keeps his vertical scenes. */
@@ -190,6 +195,12 @@ bool MsrVerticalCanvas::ready() const
 	return canvas_ && obs_canvas_has_video(canvas_);
 }
 
+std::string MsrVerticalCanvas::followed_scene_name() const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	return followed_name_;
+}
+
 namespace {
 
 struct SceneListCtx {
@@ -206,19 +217,56 @@ bool enum_scenes_cb(void *data, obs_source_t *source)
 }
 
 struct ItemFindCtx {
-	const char *name;
+	const char *key;
 	obs_sceneitem_t *item;
+	bool by_uuid;
 };
 
 bool find_item_cb(obs_scene_t *, obs_sceneitem_t *item, void *param)
 {
 	auto *ctx = static_cast<ItemFindCtx *>(param);
 	obs_source_t *src = obs_sceneitem_get_source(item);
-	const char *n = obs_source_get_name(src);
-	if (n && ctx->name && strcmp(n, ctx->name) == 0) {
-		ctx->item = item;
-		return false;
+	if (ctx->by_uuid) {
+		const char *u = obs_source_get_uuid(src);
+		if (u && ctx->key && strcmp(u, ctx->key) == 0) {
+			ctx->item = item;
+			return false;
+		}
+	} else {
+		const char *n = obs_source_get_name(src);
+		if (n && ctx->key && strcmp(n, ctx->key) == 0) {
+			ctx->item = item;
+			return false;
+		}
 	}
+	return true;
+}
+
+struct CollectUuidCtx {
+	std::unordered_set<std::string> *uuids;
+	std::vector<obs_sceneitem_t *> *items;
+};
+
+bool collect_main_items_cb(obs_scene_t *, obs_sceneitem_t *item, void *param)
+{
+	auto *ctx = static_cast<CollectUuidCtx *>(param);
+	obs_source_t *src = obs_sceneitem_get_source(item);
+	const char *u = obs_source_get_uuid(src);
+	if (u && *u) {
+		ctx->uuids->insert(u);
+		ctx->items->push_back(item);
+	}
+	return true;
+}
+
+struct CollectVertCtx {
+	std::vector<obs_sceneitem_t *> *items;
+};
+
+bool collect_vert_items_cb(obs_scene_t *, obs_sceneitem_t *item, void *param)
+{
+	auto *ctx = static_cast<CollectVertCtx *>(param);
+	ctx->items->push_back(item);
 	return true;
 }
 
@@ -247,6 +295,7 @@ bool MsrVerticalCanvas::set_program_scene(const std::string &scene_name)
 		return false;
 	obs_canvas_set_channel(canvas_, 0, obs_scene_get_source(scene));
 	obs_scene_release(scene);
+	followed_name_ = scene_name;
 	obs_log(LOG_INFO, "vertical program scene set to '%s'", scene_name.c_str());
 	return true;
 }
@@ -270,13 +319,167 @@ bool MsrVerticalCanvas::create_scene(const std::string &scene_name)
 	return true;
 }
 
+obs_sceneitem_t *MsrVerticalCanvas::find_item_by_uuid(obs_scene_t *scene, const char *uuid)
+{
+	if (!scene || !uuid || !*uuid)
+		return nullptr;
+	ItemFindCtx ctx{uuid, nullptr, true};
+	obs_scene_enum_items(scene, find_item_cb, &ctx);
+	return ctx.item;
+}
+
 obs_sceneitem_t *MsrVerticalCanvas::find_item_by_name(obs_scene_t *scene, const std::string &source_name)
 {
 	if (!scene || source_name.empty())
 		return nullptr;
-	ItemFindCtx ctx{source_name.c_str(), nullptr};
+	ItemFindCtx ctx{source_name.c_str(), nullptr, false};
 	obs_scene_enum_items(scene, find_item_cb, &ctx);
 	return ctx.item;
+}
+
+void MsrVerticalCanvas::apply_default_vertical_transform(obs_sceneitem_t *item)
+{
+	if (!item)
+		return;
+	const uint32_t cw = width_ ? width_ : 1080;
+	const uint32_t ch = height_ ? height_ : 1920;
+	obs_sceneitem_set_bounds_type(item, OBS_BOUNDS_SCALE_INNER);
+	obs_sceneitem_set_bounds_alignment(item, OBS_ALIGN_CENTER);
+	vec2 bounds;
+	vec2_set(&bounds, (float)cw, (float)ch);
+	obs_sceneitem_set_bounds(item, &bounds);
+	vec2 pos;
+	vec2_set(&pos, 0.0f, 0.0f);
+	obs_sceneitem_set_pos(item, &pos);
+	obs_sceneitem_set_alignment(item, OBS_ALIGN_TOP | OBS_ALIGN_LEFT);
+}
+
+bool MsrVerticalCanvas::sync_from_main(obs_scene_t *main_scene, obs_scene_t *vert_scene)
+{
+	if (!main_scene || !vert_scene)
+		return false;
+
+	std::unordered_set<std::string> main_uuids;
+	std::vector<obs_sceneitem_t *> main_items;
+	CollectUuidCtx cctx{&main_uuids, &main_items};
+	obs_scene_enum_items(main_scene, collect_main_items_cb, &cctx);
+
+	/* Add missing sources into the vertical scene (keep existing vertical transforms). */
+	for (obs_sceneitem_t *mitem : main_items) {
+		obs_source_t *src = obs_sceneitem_get_source(mitem);
+		const char *uuid = obs_source_get_uuid(src);
+		if (!uuid || !*uuid)
+			continue;
+		if (find_item_by_uuid(vert_scene, uuid))
+			continue;
+		obs_sceneitem_t *added = obs_scene_add(vert_scene, src);
+		if (added) {
+			apply_default_vertical_transform(added);
+			obs_sceneitem_set_visible(added, obs_sceneitem_visible(mitem));
+			const char *n = obs_source_get_name(src);
+			obs_log(LOG_INFO, "vertical sync: added '%s'", n ? n : "?");
+		}
+	}
+
+	/* Remove vertical-only leftovers that are no longer in the main scene. */
+	std::vector<obs_sceneitem_t *> vert_items;
+	CollectVertCtx vctx{&vert_items};
+	obs_scene_enum_items(vert_scene, collect_vert_items_cb, &vctx);
+	for (obs_sceneitem_t *vitem : vert_items) {
+		obs_source_t *src = obs_sceneitem_get_source(vitem);
+		const char *uuid = obs_source_get_uuid(src);
+		if (!uuid || main_uuids.find(uuid) == main_uuids.end()) {
+			const char *n = obs_source_get_name(src);
+			obs_log(LOG_INFO, "vertical sync: removed '%s'", n ? n : "?");
+			obs_sceneitem_remove(vitem);
+		}
+	}
+	return true;
+}
+
+void MsrVerticalCanvas::detach_main_signals()
+{
+	if (!main_signal_source_)
+		return;
+	signal_handler_t *sh = obs_source_get_signal_handler(main_signal_source_);
+	if (sh) {
+		signal_handler_disconnect(sh, "item_add", on_main_item_add, this);
+		signal_handler_disconnect(sh, "item_remove", on_main_item_remove, this);
+	}
+	main_signal_source_ = nullptr;
+}
+
+void MsrVerticalCanvas::attach_main_signals(obs_source_t *main_scene_source)
+{
+	detach_main_signals();
+	if (!main_scene_source)
+		return;
+	main_signal_source_ = main_scene_source;
+	signal_handler_t *sh = obs_source_get_signal_handler(main_scene_source);
+	if (!sh)
+		return;
+	signal_handler_connect(sh, "item_add", on_main_item_add, this);
+	signal_handler_connect(sh, "item_remove", on_main_item_remove, this);
+}
+
+void MsrVerticalCanvas::on_main_item_add(void *data, calldata_t *)
+{
+	auto *self = static_cast<MsrVerticalCanvas *>(data);
+	if (self)
+		self->follow_main_scene();
+}
+
+void MsrVerticalCanvas::on_main_item_remove(void *data, calldata_t *)
+{
+	auto *self = static_cast<MsrVerticalCanvas *>(data);
+	if (self)
+		self->follow_main_scene();
+}
+
+bool MsrVerticalCanvas::follow_main_scene()
+{
+	obs_source_t *main_src = obs_frontend_get_current_scene();
+	if (!main_src)
+		return false;
+
+	const char *name = obs_source_get_name(main_src);
+	if (!name || !*name) {
+		obs_source_release(main_src);
+		return false;
+	}
+
+	obs_scene_t *main_scene = obs_scene_from_source(main_src);
+	if (!main_scene) {
+		obs_source_release(main_src);
+		return false;
+	}
+
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		if (!canvas_) {
+			obs_source_release(main_src);
+			return false;
+		}
+
+		obs_scene_t *vert = obs_canvas_get_scene_by_name(canvas_, name);
+		if (!vert)
+			vert = obs_canvas_scene_create(canvas_, name);
+		if (!vert) {
+			obs_log(LOG_ERROR, "vertical follow: failed to create scene '%s'", name);
+			obs_source_release(main_src);
+			return false;
+		}
+
+		sync_from_main(main_scene, vert);
+		obs_canvas_set_channel(canvas_, 0, obs_scene_get_source(vert));
+		followed_name_ = name;
+		obs_scene_release(vert);
+	}
+
+	attach_main_signals(main_src);
+	obs_log(LOG_INFO, "vertical canvas following main scene '%s'", name);
+	obs_source_release(main_src);
+	return true;
 }
 
 bool MsrVerticalCanvas::add_existing_source(const std::string &source_name)
@@ -293,7 +496,6 @@ bool MsrVerticalCanvas::add_existing_source(const std::string &source_name)
 		return false;
 	}
 
-	/* Avoid duplicate top-level items for the same source. */
 	if (find_item_by_name(scene, source_name)) {
 		obs_scene_release(scene);
 		obs_source_release(src);
@@ -307,18 +509,7 @@ bool MsrVerticalCanvas::add_existing_source(const std::string &source_name)
 		return false;
 	}
 
-	/* Fit to vertical canvas by default. */
-	const uint32_t cw = width_ ? width_ : 1080;
-	const uint32_t ch = height_ ? height_ : 1920;
-	obs_sceneitem_set_bounds_type(item, OBS_BOUNDS_SCALE_INNER);
-	obs_sceneitem_set_bounds_alignment(item, OBS_ALIGN_CENTER);
-	vec2 bounds;
-	vec2_set(&bounds, (float)cw, (float)ch);
-	obs_sceneitem_set_bounds(item, &bounds);
-	vec2 pos;
-	vec2_set(&pos, 0.0f, 0.0f);
-	obs_sceneitem_set_pos(item, &pos);
-
+	apply_default_vertical_transform(item);
 	obs_scene_release(scene);
 	obs_log(LOG_INFO, "added source '%s' to vertical program scene", source_name.c_str());
 	return true;
@@ -334,16 +525,7 @@ bool MsrVerticalCanvas::fit_source(const std::string &source_name)
 		obs_scene_release(scene);
 		return false;
 	}
-	const uint32_t cw = width_ ? width_ : 1080;
-	const uint32_t ch = height_ ? height_ : 1920;
-	obs_sceneitem_set_bounds_type(item, OBS_BOUNDS_SCALE_INNER);
-	obs_sceneitem_set_bounds_alignment(item, OBS_ALIGN_CENTER);
-	vec2 bounds;
-	vec2_set(&bounds, (float)cw, (float)ch);
-	obs_sceneitem_set_bounds(item, &bounds);
-	vec2 pos;
-	vec2_set(&pos, 0.0f, 0.0f);
-	obs_sceneitem_set_pos(item, &pos);
+	apply_default_vertical_transform(item);
 	obs_scene_release(scene);
 	return true;
 }

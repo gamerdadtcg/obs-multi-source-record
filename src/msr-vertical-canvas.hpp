@@ -15,7 +15,11 @@ the Free Software Foundation; either version 2 of the License, or
 #include <vector>
 #include <mutex>
 
-/** Owns/ensures the MSR Vertical obs_canvas (OBS 31+ multi-canvas). */
+/**
+ * Owns the MSR Vertical obs_canvas (OBS 31+).
+ * Follows the main program scene (Aitum-style linked scene): same source refs,
+ * independent vertical-only transforms / visibility per sceneitem.
+ */
 class MsrVerticalCanvas {
 public:
 	static constexpr const char *kCanvasName = "MSR Vertical";
@@ -25,7 +29,6 @@ public:
 	static void create();
 	static void destroy();
 
-	/** Create or refresh the vertical canvas at the given resolution. Safe to call repeatedly. */
 	bool ensure(uint32_t width, uint32_t height);
 
 	obs_canvas_t *canvas();
@@ -36,12 +39,15 @@ public:
 	uint32_t height() const { return height_; }
 	bool ready() const;
 
+	/** Switch/create the vertical scene that mirrors the current main scene and sync sources. */
+	bool follow_main_scene();
+	/** Name of the main scene currently mirrored (empty if none). */
+	std::string followed_scene_name() const;
+
 	std::vector<std::string> list_scenes();
 	bool set_program_scene(const std::string &scene_name);
 	bool create_scene(const std::string &scene_name);
-	/** Add an existing OBS source into the program vertical scene. Returns false if missing. */
 	bool add_existing_source(const std::string &source_name);
-	/** Fit selected scene item (by source name) to the vertical canvas. */
 	bool fit_source(const std::string &source_name);
 	bool set_item_visible(const std::string &source_name, bool visible);
 	bool reorder_source(const std::string &source_name, bool move_up);
@@ -52,11 +58,21 @@ private:
 
 	obs_canvas_t *find_existing() const;
 	bool ensure_default_scene(obs_canvas_t *canvas);
+	obs_sceneitem_t *find_item_by_uuid(obs_scene_t *scene, const char *uuid);
 	obs_sceneitem_t *find_item_by_name(obs_scene_t *scene, const std::string &source_name);
+	void apply_default_vertical_transform(obs_sceneitem_t *item);
+	bool sync_from_main(obs_scene_t *main_scene, obs_scene_t *vert_scene);
+	void attach_main_signals(obs_source_t *main_scene_source);
+	void detach_main_signals();
+
+	static void on_main_item_add(void *data, calldata_t *cd);
+	static void on_main_item_remove(void *data, calldata_t *cd);
 
 	mutable std::mutex mutex_;
 	obs_canvas_t *canvas_ = nullptr; /* strong */
 	uint32_t width_ = 0;
 	uint32_t height_ = 0;
+	std::string followed_name_;
+	obs_source_t *main_signal_source_ = nullptr; /* weak-ish: we only use for disconnect */
 	static MsrVerticalCanvas *instance_;
 };

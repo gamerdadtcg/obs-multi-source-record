@@ -51,11 +51,20 @@ static void frontend_event(enum obs_frontend_event event, void *)
 		if (auto *vc = MsrVerticalCanvas::instance()) {
 			auto s = c->settings();
 			vc->ensure((uint32_t)s.vertical_width, (uint32_t)s.vertical_height);
+			vc->follow_main_scene();
 		}
 		if (preview_dock)
 			QMetaObject::invokeMethod(preview_dock, "refresh_all", Qt::QueuedConnection);
 		/* Start replay buffers if enabled in saved settings (safe; no OBS stream). */
 		c->sync_replays_to_settings();
+	} else if (event == OBS_FRONTEND_EVENT_SCENE_CHANGED) {
+		if (auto *vc = MsrVerticalCanvas::instance()) {
+			auto s = c->settings();
+			vc->ensure((uint32_t)s.vertical_width, (uint32_t)s.vertical_height);
+			vc->follow_main_scene();
+		}
+		if (preview_dock)
+			QMetaObject::invokeMethod(preview_dock, "on_main_scene_changed", Qt::QueuedConnection);
 	} else if (event == OBS_FRONTEND_EVENT_RECORDING_STARTED) {
 		c->on_obs_recording_started();
 		if (dock_widget)

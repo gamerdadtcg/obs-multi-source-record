@@ -98,7 +98,7 @@ The dock has **Pause** / **Resume**, **Chapter**, and **Save Replay** next to St
 
 ### Vertical canvas
 
-Vertical (and the vertical half of Both) records the shared **MSR Vertical** canvas once — not a per-source center crop. The plugin creates that canvas (default scene named **Vertical**) at the resolution in Advanced (default **1080×1920**). Compose your vertical layout in that canvas’s scenes; open **View → Docks → MSR Vertical Preview** to see it. Horizontal recording is unchanged (one file per enabled source).
+Vertical (and the vertical half of Both) records the shared **MSR Vertical** canvas once — not a per-source center crop. The canvas is **1080×1920** by default and **follows the same active scene as main** (Aitum-style linked scene): the same sources appear on vertical, but each has an **independent vertical-only transform** (position, size, crop, visibility). Switching scenes on main switches the vertical layout with it; rearranging vertical does not change the horizontal layout. Open **View → Docks → MSR Vertical Preview** to drag/resize sources (Alt-drag to crop). Horizontal recording is unchanged (one file per enabled source).
 
 
 
