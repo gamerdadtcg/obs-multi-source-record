@@ -872,6 +872,11 @@ void MsrPreviewDisplay::move_selected(const vec2 &pos)
 	vec2_sub(&offset, &pos, &start_pos_);
 	vec2_sub(&moveOffset, &offset, &last_move_offset_);
 
+	/*
+	 * Snap never changes drag mode (mode is fixed at press). Only nudges the
+	 * translation. Skip a snap axis that fights the user's drag — otherwise a
+	 * flush full-canvas item is glued to the edges and feels unmovable.
+	 */
 	if (!(QGuiApplication::keyboardModifiers() & Qt::ControlModifier) && snap_enabled_) {
 		vec2 size = get_item_size(stretch_item_);
 		vec2 cur;
@@ -880,6 +885,10 @@ void MsrPreviewDisplay::move_selected(const vec2 &pos)
 		vec3_set(&tl, cur.x + moveOffset.x, cur.y + moveOffset.y, 0.0f);
 		vec3_set(&br, tl.x + size.x, tl.y + size.y, 0.0f);
 		vec3 snap = snap_offset(tl, br);
+		if (snap.x * moveOffset.x < 0.0f)
+			snap.x = 0.0f;
+		if (snap.y * moveOffset.y < 0.0f)
+			snap.y = 0.0f;
 		moveOffset.x += snap.x;
 		moveOffset.y += snap.y;
 	}
@@ -950,6 +959,80 @@ void MsrPreviewDisplay::stretch_selected(const vec2 &pos)
 		size.x = 2.0f;
 	if (size.y < 2.0f)
 		size.y = 2.0f;
+
+	/*
+	 * Optional snap during resize: only the edges being dragged, small
+	 * threshold. Does not change handle/mode. Ctrl disables.
+	 */
+	if (snap_enabled_ && !(QGuiApplication::keyboardModifiers() & Qt::ControlModifier)) {
+		vec3 sTL, sBR;
+		vec3_set(&sTL, tl.x, tl.y, 0.0f);
+		vec3_set(&sBR, br.x, br.y, 0.0f);
+		vec3_transform(&sTL, &sTL, &item_to_screen_);
+		vec3_transform(&sBR, &sBR, &item_to_screen_);
+		const float dprSnap = float(devicePixelRatioF());
+		const float clampDist = SNAP_DISTANCE * (dprSnap > 0.001f ? dprSnap : 1.0f) /
+					(preview_scale_ > 0.001f ? preview_scale_ : 1.0f);
+		const float screenW = float(world_cx_);
+		const float screenH = float(world_cy_);
+		auto snap_axis = [&](float &v, float target) {
+			if (fabsf(v - target) < clampDist)
+				v = target;
+		};
+		if (stretchFlags & (uint32_t)MsrItemHandle::Left)
+			snap_axis(sTL.x, 0.0f);
+		if (stretchFlags & (uint32_t)MsrItemHandle::Right)
+			snap_axis(sBR.x, screenW);
+		if (stretchFlags & (uint32_t)MsrItemHandle::Top)
+			snap_axis(sTL.y, 0.0f);
+		if (stretchFlags & (uint32_t)MsrItemHandle::Bottom)
+			snap_axis(sBR.y, screenH);
+		/* Optional center snap for the moving edge only. */
+		if ((stretchFlags & (uint32_t)MsrItemHandle::Left) ||
+		    (stretchFlags & (uint32_t)MsrItemHandle::Right)) {
+			const float mid = (sTL.x + sBR.x) * 0.5f;
+			if (fabsf(mid - screenW * 0.5f) < clampDist) {
+				const float half = (sBR.x - sTL.x) * 0.5f;
+				if (stretchFlags & (uint32_t)MsrItemHandle::Left)
+					sTL.x = screenW * 0.5f - half;
+				if (stretchFlags & (uint32_t)MsrItemHandle::Right)
+					sBR.x = screenW * 0.5f + half;
+			}
+		}
+		if ((stretchFlags & (uint32_t)MsrItemHandle::Top) ||
+		    (stretchFlags & (uint32_t)MsrItemHandle::Bottom)) {
+			const float mid = (sTL.y + sBR.y) * 0.5f;
+			if (fabsf(mid - screenH * 0.5f) < clampDist) {
+				const float half = (sBR.y - sTL.y) * 0.5f;
+				if (stretchFlags & (uint32_t)MsrItemHandle::Top)
+					sTL.y = screenH * 0.5f - half;
+				if (stretchFlags & (uint32_t)MsrItemHandle::Bottom)
+					sBR.y = screenH * 0.5f + half;
+			}
+		}
+		vec3_transform(&sTL, &sTL, &screen_to_item_);
+		vec3_transform(&sBR, &sBR, &screen_to_item_);
+		if (stretchFlags & (uint32_t)MsrItemHandle::Left)
+			tl.x = sTL.x;
+		if (stretchFlags & (uint32_t)MsrItemHandle::Right)
+			br.x = sBR.x;
+		if (stretchFlags & (uint32_t)MsrItemHandle::Top)
+			tl.y = sTL.y;
+		if (stretchFlags & (uint32_t)MsrItemHandle::Bottom)
+			br.y = sBR.y;
+		vec2_set(&size, br.x - tl.x, br.y - tl.y);
+		if (!shiftDown)
+			clamp_aspect(tl, br, size, baseSize);
+		if (tl.x > br.x)
+			std::swap(tl.x, br.x);
+		if (tl.y > br.y)
+			std::swap(tl.y, br.y);
+		vec2_abs(&size, &size);
+		if (size.x < 2.0f)
+			size.x = 2.0f;
+		if (size.y < 2.0f)
+			size.y = 2.0f;
+	}
 
 	obs_sceneitem_defer_update_begin(stretch_item_);
 	/*
@@ -1410,11 +1493,12 @@ void MsrPreviewDock::build_ui()
 	root->addWidget(hint_label_);
 
 	snap_check_ = new QCheckBox(QString::fromUtf8(obs_module_text("VerticalSnap")), this);
-	snap_check_->setChecked(true);
+	/* Off by default: flush full-canvas sources (e.g. Fit) otherwise fight every move. */
+	snap_check_->setChecked(false);
 	root->addWidget(snap_check_);
 	connect(snap_check_, &QCheckBox::toggled, this, &MsrPreviewDock::on_snap_toggled);
 	if (display_)
-		display_->set_snap_enabled(true);
+		display_->set_snap_enabled(false);
 
 	auto *size_row = new QHBoxLayout();
 	size_row->addWidget(new QLabel(QString::fromUtf8(obs_module_text("VerticalSizeW")), this));
