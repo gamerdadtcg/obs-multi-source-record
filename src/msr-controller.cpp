@@ -1448,6 +1448,22 @@ void MsrController::ws_vertical_set_item(obs_data_t *request_data, obs_data_t *r
 }
 
 
+
+void MsrController::ws_vertical_fit(obs_data_t *request_data, obs_data_t *response_data, void *priv)
+{
+	UNUSED_PARAMETER(priv);
+	obs_data_set_bool(response_data, "success", false);
+	const char *name = request_data ? obs_data_get_string(request_data, "source_name") : nullptr;
+	if (!name || !*name)
+		return;
+	auto *vc = MsrVerticalCanvas::instance();
+	if (!vc)
+		return;
+	const bool ok = vc->fit_source(name);
+	obs_data_set_bool(response_data, "success", ok);
+	obs_data_set_string(response_data, "source_name", name);
+}
+
 void MsrController::ws_vertical_select(obs_data_t *request_data, obs_data_t *response_data, void *priv)
 {
 	UNUSED_PARAMETER(priv);
@@ -1492,5 +1508,6 @@ void MsrController::register_websocket()
 	obs_websocket_vendor_register_request(ws_vendor_, "vertical_status", ws_vertical_status, this);
 	obs_websocket_vendor_register_request(ws_vendor_, "vertical_set_item", ws_vertical_set_item, this);
 	obs_websocket_vendor_register_request(ws_vendor_, "vertical_select", ws_vertical_select, this);
+	obs_websocket_vendor_register_request(ws_vendor_, "vertical_fit", ws_vertical_fit, this);
 	obs_log(LOG_INFO, "registered obs-websocket vendor obs-multi-source-record");
 }

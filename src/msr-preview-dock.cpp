@@ -80,8 +80,8 @@ bool msr_selected_handle_cb(obs_scene_t *, obs_sceneitem_t *it, void *p)
 
 namespace {
 
-constexpr float HANDLE_RADIUS = 10.0f;
-constexpr float HANDLE_SEL_RADIUS = 16.0f;
+constexpr float HANDLE_RADIUS = 7.0f;       /* half-size in logical screen px (drawn larger) */
+constexpr float HANDLE_SEL_RADIUS = 12.0f;  /* hit radius in logical screen px */
 constexpr float DRAG_THRESHOLD = 5.0f;
 constexpr float SNAP_DISTANCE = 12.0f;
 
@@ -542,7 +542,6 @@ void MsrPreviewDisplay::draw_preview(void *param, uint32_t cx, uint32_t cy)
 
 bool MsrPreviewDisplay::draw_selected_cb(obs_scene_t *, obs_sceneitem_t *item, void *param)
 {
-	UNUSED_PARAMETER(param);
 	if (!obs_sceneitem_selected(item) || !obs_sceneitem_visible(item))
 		return true;
 
@@ -574,18 +573,22 @@ bool MsrPreviewDisplay::draw_selected_cb(obs_scene_t *, obs_sceneitem_t *item, v
 		gs_draw(GS_LINESTRIP, 0, 0);
 	}
 
-	/* Handles in source-pixel space (same matrix as outline). */
+	/* Handles sized in screen px so they stay visible at any zoom. */
+	auto *self = static_cast<MsrPreviewDisplay *>(param);
 	vec2 content = get_item_size(item);
-	float hx = HANDLE_RADIUS / (fabsf(content.x) > 1.0f ? fabsf(content.x) : 1.0f) * cx;
-	float hy = HANDLE_RADIUS / (fabsf(content.y) > 1.0f ? fabsf(content.y) : 1.0f) * cy;
+	const float dpr = self ? float(self->devicePixelRatioF()) : 1.0f;
+	const float ps = (self && self->preview_scale_ > 0.001f) ? self->preview_scale_ : 1.0f;
+	const float half_world = HANDLE_RADIUS * (dpr > 0.001f ? dpr : 1.0f) / ps;
+	float hx = half_world * (cx / (fabsf(content.x) > 1.0f ? fabsf(content.x) : 1.0f));
+	float hy = half_world * (cy / (fabsf(content.y) > 1.0f ? fabsf(content.y) : 1.0f));
 	if (hx < 1.0f)
 		hx = 1.0f;
 	if (hy < 1.0f)
 		hy = 1.0f;
-	if (hx > cx * 0.08f)
-		hx = cx * 0.08f;
-	if (hy > cy * 0.08f)
-		hy = cy * 0.08f;
+	if (hx > cx * 0.12f)
+		hx = cx * 0.12f;
+	if (hy > cy * 0.12f)
+		hy = cy * 0.12f;
 	auto draw_handle = [&](float px, float py) {
 		gs_render_start(true);
 		gs_vertex2f(px - hx, py - hy);
@@ -650,7 +653,10 @@ MsrItemHandle MsrPreviewDisplay::handle_at_pos(obs_sceneitem_t *item, const vec2
 
 	matrix4 box;
 	get_selection_box_transform(item, &box);
-	const float radius = HANDLE_SEL_RADIUS / (preview_scale_ > 0.001f ? preview_scale_ : 1.0f);
+	/* HANDLE_SEL_RADIUS is logical screen px; world radius matches GetMouseEventPos mapping. */
+	const float dpr = float(devicePixelRatioF());
+	const float ps = preview_scale_ > 0.001f ? preview_scale_ : 1.0f;
+	const float radius = HANDLE_SEL_RADIUS * (dpr > 0.001f ? dpr : 1.0f) / ps;
 
 	struct Probe {
 		float u, v;
@@ -665,16 +671,16 @@ MsrItemHandle MsrPreviewDisplay::handle_at_pos(obs_sceneitem_t *item, const vec2
 
 	MsrItemHandle best = MsrItemHandle::None;
 	float best_d = radius * radius;
-	for (const auto &p : probes) {
+	for (const auto &pr : probes) {
 		vec3 corner, world;
-		vec3_set(&corner, p.u, p.v, 0.0f);
+		vec3_set(&corner, pr.u, pr.v, 0.0f);
 		vec3_transform(&world, &corner, &box);
 		float dx = world.x - pos.x;
 		float dy = world.y - pos.y;
 		float d = dx * dx + dy * dy;
 		if (d <= best_d) {
 			best_d = d;
-			best = p.h;
+			best = pr.h;
 		}
 	}
 	return best;
@@ -755,7 +761,9 @@ vec3 MsrPreviewDisplay::snap_offset(const vec3 &tl, const vec3 &br) const
 	if (!snap_enabled_)
 		return clampOffset;
 
-	const float clampDist = SNAP_DISTANCE / (preview_scale_ > 0.001f ? preview_scale_ : 1.0f);
+	const float dprSnap = float(devicePixelRatioF());
+	const float clampDist = SNAP_DISTANCE * (dprSnap > 0.001f ? dprSnap : 1.0f) /
+				(preview_scale_ > 0.001f ? preview_scale_ : 1.0f);
 	const float screenW = float(world_cx_);
 	const float screenH = float(world_cy_);
 	const float centerX = br.x - (br.x - tl.x) / 2.0f;
@@ -906,32 +914,37 @@ void MsrPreviewDisplay::stretch_selected(const vec2 &pos)
 	if (size.y < 2.0f)
 		size.y = 2.0f;
 
-	obs_bounds_type boundsType = obs_sceneitem_get_bounds_type(stretch_item_);
 	obs_sceneitem_defer_update_begin(stretch_item_);
+	/*
+	 * Always leave bounds mode so the visible content box is what we resize.
+	 * Aspect (default): uniform scale (scale_x == scale_y), opposite corner fixed
+	 * via clamp_aspect + TOP|LEFT alignment at the new tl.
+	 * Shift: free STRETCH bounds sized to the dragged rect.
+	 */
+	obs_sceneitem_set_bounds_alignment(stretch_item_, OBS_ALIGN_TOP | OBS_ALIGN_LEFT);
+	obs_sceneitem_set_alignment(stretch_item_, OBS_ALIGN_TOP | OBS_ALIGN_LEFT);
 	if (shiftDown) {
-		/* Free resize may distort. */
 		obs_sceneitem_set_bounds_type(stretch_item_, OBS_BOUNDS_STRETCH);
-		obs_sceneitem_set_bounds_alignment(stretch_item_, OBS_ALIGN_TOP | OBS_ALIGN_LEFT);
-		obs_sceneitem_set_alignment(stretch_item_, OBS_ALIGN_TOP | OBS_ALIGN_LEFT);
+		vec2 zero_scale;
+		vec2_set(&zero_scale, 1.0f, 1.0f);
+		obs_sceneitem_set_scale(stretch_item_, &zero_scale);
 		obs_sceneitem_set_bounds(stretch_item_, &size);
 	} else {
-		/* Keep aspect: uniform scale from source base (scale.x == scale.y). */
 		vec2 scale;
 		vec2_div(&scale, &size, &baseSize);
-		/* After clamp_aspect, size matches baseAspect so sx≈sy; force exact. */
 		const float s = (fabsf(scale.x) + fabsf(scale.y)) * 0.5f;
-		if (s > 0.0001f) {
-			scale.x = s;
-			scale.y = s;
-		}
+		if (s < 0.0001f)
+			scale.x = scale.y = 0.0001f;
+		else
+			scale.x = scale.y = s;
 		obs_sceneitem_set_bounds_type(stretch_item_, OBS_BOUNDS_NONE);
-		obs_sceneitem_set_bounds_alignment(stretch_item_, OBS_ALIGN_TOP | OBS_ALIGN_LEFT);
-		obs_sceneitem_set_alignment(stretch_item_, OBS_ALIGN_TOP | OBS_ALIGN_LEFT);
+		vec2 empty;
+		vec2_zero(&empty);
+		obs_sceneitem_set_bounds(stretch_item_, &empty);
 		obs_sceneitem_set_scale(stretch_item_, &scale);
-		(void)boundsType;
 	}
 
-	/* Position from top-left of stretched rect in item space → screen. */
+	/* tl in item space → canvas; with TOP|LEFT this is the drawn origin. */
 	vec3 newPos3;
 	vec3_set(&newPos3, tl.x, tl.y, 0.0f);
 	vec3_transform(&newPos3, &newPos3, &item_to_screen_);

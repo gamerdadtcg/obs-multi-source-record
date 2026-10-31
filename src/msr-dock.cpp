@@ -28,6 +28,14 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QScrollArea>
 #include <QFileDialog>
 #include <QFrame>
+#include <QSizePolicy>
+#include <util/config-file.h>
+#include <QByteArray>
+#include <QDockWidget>
+#include <QHideEvent>
+#include <QShowEvent>
+#include <QSizeGrip>
+#include <QSplitter>
 
 #include <string>
 
@@ -76,60 +84,93 @@ MsrDock::~MsrDock()
 
 void MsrDock::build_ui()
 {
-	auto *root = new QVBoxLayout(this);
+	setMinimumSize(380, 520);
+	setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+
+	auto *outer = new QVBoxLayout(this);
+	outer->setContentsMargins(0, 0, 0, 0);
+	outer->setSpacing(0);
+
+	outer_scroll_ = new QScrollArea(this);
+	outer_scroll_->setWidgetResizable(true);
+	outer_scroll_->setFrameShape(QFrame::NoFrame);
+	outer_scroll_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+	outer_scroll_->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+	outer_scroll_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+
+	auto *content = new QWidget(outer_scroll_);
+	content->setMinimumWidth(340);
+	auto *root = new QVBoxLayout(content);
 	root->setContentsMargins(8, 8, 8, 8);
 	root->setSpacing(8);
 
-	auto *title = new QLabel(QString::fromUtf8(obs_module_text("DockTitle")), this);
+	auto *title = new QLabel(QString::fromUtf8(obs_module_text("DockTitle")), content);
 	QFont f = title->font();
 	f.setBold(true);
 	f.setPointSize(f.pointSize() + 1);
 	title->setFont(f);
 	root->addWidget(title);
 
-	auto *hint = new QLabel(QString::fromUtf8(obs_module_text("DockHint")), this);
+	auto *hint = new QLabel(QString::fromUtf8(obs_module_text("DockHint")), content);
 	hint->setWordWrap(true);
 	root->addWidget(hint);
 
-	auto *scroll = new QScrollArea(this);
-	scroll->setWidgetResizable(true);
-	scroll->setFrameShape(QFrame::NoFrame);
-	auto *source_host = new QWidget(scroll);
+	main_splitter_ = new QSplitter(Qt::Vertical, content);
+	main_splitter_->setChildrenCollapsible(false);
+
+	/* ---- Sources (expands with window height; min ~8 rows) ---- */
+	auto *sources_panel = new QWidget(main_splitter_);
+	auto *sources_l = new QVBoxLayout(sources_panel);
+	sources_l->setContentsMargins(0, 0, 0, 0);
+	sources_l->setSpacing(4);
+	sources_l->addWidget(new QLabel(QString::fromUtf8(obs_module_text("VerticalSources")), sources_panel));
+
+	source_scroll_ = new QScrollArea(sources_panel);
+	source_scroll_->setWidgetResizable(true);
+	source_scroll_->setFrameShape(QFrame::StyledPanel);
+	source_scroll_->setMinimumHeight(8 * 28); /* ~8 source rows */
+	source_scroll_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+	auto *source_host = new QWidget(source_scroll_);
 	source_list_layout_ = new QVBoxLayout(source_host);
-	source_list_layout_->setContentsMargins(0, 0, 0, 0);
+	source_list_layout_->setContentsMargins(4, 4, 4, 4);
 	source_list_layout_->setSpacing(4);
 	source_list_layout_->addStretch(1);
-	scroll->setWidget(source_host);
-	scroll->setMinimumHeight(140);
-	root->addWidget(scroll, 1);
+	source_scroll_->setWidget(source_host);
+	sources_l->addWidget(source_scroll_, 1);
 
-	auto *refresh = new QPushButton(QString::fromUtf8(obs_module_text("RefreshSources")), this);
+	auto *refresh = new QPushButton(QString::fromUtf8(obs_module_text("RefreshSources")), sources_panel);
 	connect(refresh, &QPushButton::clicked, this, &MsrDock::refresh_sources);
-	root->addWidget(refresh);
+	sources_l->addWidget(refresh);
+
+	/* ---- Lower settings stack ---- */
+	auto *lower = new QWidget(main_splitter_);
+	auto *lower_l = new QVBoxLayout(lower);
+	lower_l->setContentsMargins(0, 0, 0, 0);
+	lower_l->setSpacing(8);
 
 	auto *folder_row = new QHBoxLayout();
-	folder_edit_ = new QLineEdit(this);
+	folder_edit_ = new QLineEdit(lower);
 	folder_edit_->setPlaceholderText(QString::fromUtf8(obs_module_text("OutputFolder")));
-	auto *browse = new QPushButton(QString::fromUtf8(obs_module_text("Browse")), this);
+	auto *browse = new QPushButton(QString::fromUtf8(obs_module_text("Browse")), lower);
 	connect(browse, &QPushButton::clicked, this, &MsrDock::on_browse_folder);
 	folder_row->addWidget(folder_edit_, 1);
 	folder_row->addWidget(browse);
-	root->addLayout(folder_row);
+	lower_l->addLayout(folder_row);
 
-	pattern_edit_ = new QLineEdit(this);
+	pattern_edit_ = new QLineEdit(lower);
 	pattern_edit_->setPlaceholderText(QStringLiteral("{source}_{orientation}_{date}_{time}"));
-	root->addWidget(new QLabel(QString::fromUtf8(obs_module_text("FilenamePattern")), this));
-	root->addWidget(pattern_edit_);
+	lower_l->addWidget(new QLabel(QString::fromUtf8(obs_module_text("FilenamePattern")), lower));
+	lower_l->addWidget(pattern_edit_);
 
 	auto *fmt_row = new QHBoxLayout();
-	container_combo_ = new QComboBox(this);
+	container_combo_ = new QComboBox(lower);
 	container_combo_->addItem(QStringLiteral("mkv"), QStringLiteral("mkv"));
 	container_combo_->addItem(QStringLiteral("mp4"), QStringLiteral("mp4"));
-	fmt_row->addWidget(new QLabel(QString::fromUtf8(obs_module_text("Container")), this));
+	fmt_row->addWidget(new QLabel(QString::fromUtf8(obs_module_text("Container")), lower));
 	fmt_row->addWidget(container_combo_, 1);
-	root->addLayout(fmt_row);
+	lower_l->addLayout(fmt_row);
 
-	auto *opts = new QGroupBox(QString::fromUtf8(obs_module_text("RecordingOptions")), this);
+	auto *opts = new QGroupBox(QString::fromUtf8(obs_module_text("RecordingOptions")), lower);
 	auto *opts_l = new QVBoxLayout(opts);
 
 	auto_start_combo_ = new QComboBox(opts);
@@ -144,18 +185,6 @@ void MsrDock::build_ui()
 	auto *as_hint = new QLabel(QString::fromUtf8(obs_module_text("AutoStartHint")), opts);
 	as_hint->setWordWrap(true);
 	opts_l->addWidget(as_hint);
-
-	auto *replay_row = new QHBoxLayout();
-	replay_seconds_ = new QSpinBox(opts);
-	replay_seconds_->setRange(5, 300);
-	replay_seconds_->setSuffix(QStringLiteral(" s"));
-	replay_row->addWidget(new QLabel(QString::fromUtf8(obs_module_text("ReplaySeconds")), opts));
-	replay_row->addWidget(replay_seconds_);
-	replay_row->addStretch(1);
-	opts_l->addLayout(replay_row);
-	auto *rb_hint = new QLabel(QString::fromUtf8(obs_module_text("ReplayHint")), opts);
-	rb_hint->setWordWrap(true);
-	opts_l->addWidget(rb_hint);
 
 	split_mode_combo_ = new QComboBox(opts);
 	split_mode_combo_->addItem(QString::fromUtf8(obs_module_text("SplitOff")), (int)MsrSplitMode::Off);
@@ -181,10 +210,25 @@ void MsrDock::build_ui()
 	split_row->addWidget(split_size_mb_);
 	split_row->addStretch(1);
 	opts_l->addLayout(split_row);
+	lower_l->addWidget(opts);
 
-	root->addWidget(opts);
+	/* Replay buffer — own section, before Advanced */
+	auto *replay_box = new QGroupBox(QString::fromUtf8(obs_module_text("ReplayBuffer")), lower);
+	auto *replay_l = new QVBoxLayout(replay_box);
+	auto *replay_row = new QHBoxLayout();
+	replay_seconds_ = new QSpinBox(replay_box);
+	replay_seconds_->setRange(5, 300);
+	replay_seconds_->setSuffix(QStringLiteral(" s"));
+	replay_row->addWidget(new QLabel(QString::fromUtf8(obs_module_text("ReplaySeconds")), replay_box));
+	replay_row->addWidget(replay_seconds_);
+	replay_row->addStretch(1);
+	replay_l->addLayout(replay_row);
+	auto *rb_hint = new QLabel(QString::fromUtf8(obs_module_text("ReplayHint")), replay_box);
+	rb_hint->setWordWrap(true);
+	replay_l->addWidget(rb_hint);
+	lower_l->addWidget(replay_box);
 
-	advanced_box_ = new QGroupBox(QString::fromUtf8(obs_module_text("Advanced")), this);
+	advanced_box_ = new QGroupBox(QString::fromUtf8(obs_module_text("Advanced")), lower);
 	advanced_box_->setCheckable(true);
 	advanced_box_->setChecked(false);
 	auto *adv = new QVBoxLayout(advanced_box_);
@@ -220,10 +264,9 @@ void MsrDock::build_ui()
 	vert_row->addWidget(new QLabel(QStringLiteral("x"), advanced_box_));
 	vert_row->addWidget(vert_h_);
 	adv->addLayout(vert_row);
+	lower_l->addWidget(advanced_box_);
 
-	root->addWidget(advanced_box_);
-
-	multistream_box_ = new QGroupBox(QString::fromUtf8(obs_module_text("Multistream")), this);
+	multistream_box_ = new QGroupBox(QString::fromUtf8(obs_module_text("Multistream")), lower);
 	multistream_box_->setCheckable(true);
 	multistream_box_->setChecked(false);
 	auto *ms = new QVBoxLayout(multistream_box_);
@@ -241,31 +284,49 @@ void MsrDock::build_ui()
 	connect(stream_btn_, &QPushButton::clicked, this, &MsrDock::on_start_stop_stream);
 	ms->addWidget(stream_btn_);
 	stream_status_label_ = new QLabel(QString::fromUtf8(obs_module_text("StatusStreamIdle")), multistream_box_);
+	stream_status_label_->setWordWrap(true);
 	ms->addWidget(stream_status_label_);
-	root->addWidget(multistream_box_);
+	lower_l->addWidget(multistream_box_);
 
 	auto *btn_row = new QHBoxLayout();
-	auto *save_btn = new QPushButton(QString::fromUtf8(obs_module_text("Save")), this);
+	auto *save_btn = new QPushButton(QString::fromUtf8(obs_module_text("Save")), lower);
 	connect(save_btn, &QPushButton::clicked, this, &MsrDock::on_save);
-	start_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("StartRecording")), this);
+	start_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("StartRecording")), lower);
 	connect(start_btn_, &QPushButton::clicked, this, &MsrDock::on_start_stop);
-	pause_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("PauseRecording")), this);
+	pause_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("PauseRecording")), lower);
 	connect(pause_btn_, &QPushButton::clicked, this, &MsrDock::on_pause_resume);
 	pause_btn_->setEnabled(false);
-	chapter_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("AddChapter")), this);
+	chapter_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("AddChapter")), lower);
 	connect(chapter_btn_, &QPushButton::clicked, this, &MsrDock::on_add_chapter);
 	chapter_btn_->setEnabled(false);
-	replay_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("SaveReplay")), this);
+	replay_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("SaveReplay")), lower);
 	connect(replay_btn_, &QPushButton::clicked, this, &MsrDock::on_save_replay);
 	btn_row->addWidget(save_btn);
 	btn_row->addWidget(start_btn_, 1);
 	btn_row->addWidget(pause_btn_);
 	btn_row->addWidget(chapter_btn_);
 	btn_row->addWidget(replay_btn_);
-	root->addLayout(btn_row);
+	lower_l->addLayout(btn_row);
 
-	status_label_ = new QLabel(QString::fromUtf8(obs_module_text("StatusIdle")), this);
-	root->addWidget(status_label_);
+	status_label_ = new QLabel(QString::fromUtf8(obs_module_text("StatusIdle")), lower);
+	status_label_->setWordWrap(true);
+	lower_l->addWidget(status_label_);
+
+	auto *grip_row = new QHBoxLayout();
+	grip_row->addStretch(1);
+	grip_row->addWidget(new QSizeGrip(content), 0, Qt::AlignBottom | Qt::AlignRight);
+	lower_l->addLayout(grip_row);
+	lower_l->addStretch(0);
+
+	main_splitter_->addWidget(sources_panel);
+	main_splitter_->addWidget(lower);
+	main_splitter_->setStretchFactor(0, 2);
+	main_splitter_->setStretchFactor(1, 3);
+	main_splitter_->setSizes({280, 520});
+	root->addWidget(main_splitter_, 1);
+
+	outer_scroll_->setWidget(content);
+	outer->addWidget(outer_scroll_, 1);
 }
 
 QStringList MsrDock::enumerate_sources() const
@@ -376,24 +437,35 @@ void MsrDock::rebuild_dest_list()
 		auto *card = new QFrame(multistream_box_);
 		card->setFrameShape(QFrame::StyledPanel);
 		card->setFrameShadow(QFrame::Raised);
-		card->setMinimumWidth(260);
+		card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
 		auto *vl = new QVBoxLayout(card);
 		vl->setContentsMargins(8, 8, 8, 8);
 		vl->setSpacing(6);
 
+		MsrDestRow dr;
+		/* Row: enable + name + remove (wraps cleanly at narrow widths). */
 		auto *top = new QWidget(card);
 		auto *hl = new QHBoxLayout(top);
 		hl->setContentsMargins(0, 0, 0, 0);
 		hl->setSpacing(6);
-
-		MsrDestRow dr;
 		dr.enabled = new QCheckBox(top);
 		dr.enabled->setChecked(d.enabled);
 		dr.enabled->setToolTip(QString::fromUtf8(obs_module_text("DestinationEnabled")));
 		dr.name = new QLineEdit(QString::fromStdString(d.name), top);
 		dr.name->setPlaceholderText(QString::fromUtf8(obs_module_text("DestinationName")));
-		dr.name->setMinimumWidth(100);
-		dr.orientation = new QComboBox(top);
+		dr.name->setMinimumWidth(80);
+		dr.remove = new QPushButton(QString::fromUtf8(obs_module_text("RemoveDestination")), top);
+		dr.remove->setProperty("destIndex", di);
+		connect(dr.remove, &QPushButton::clicked, this, &MsrDock::on_remove_destination);
+		hl->addWidget(dr.enabled);
+		hl->addWidget(dr.name, 1);
+		hl->addWidget(dr.remove);
+		vl->addWidget(top);
+
+		/* Canvas on its own row so it never clips against name/remove. */
+		dr.orientation = new QComboBox(card);
+		dr.orientation->setMinimumWidth(120);
+		dr.orientation->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 		dr.orientation->addItem(QString::fromUtf8(obs_module_text("OrientationHorizontal")),
 					(int)MsrOrientation::Horizontal);
 		dr.orientation->addItem(QString::fromUtf8(obs_module_text("OrientationVertical")),
@@ -401,24 +473,19 @@ void MsrDock::rebuild_dest_list()
 		int oi = dr.orientation->findData((int)d.orientation);
 		if (oi >= 0)
 			dr.orientation->setCurrentIndex(oi);
-		dr.remove = new QPushButton(QString::fromUtf8(obs_module_text("RemoveDestination")), top);
-		dr.remove->setProperty("destIndex", di);
-		connect(dr.remove, &QPushButton::clicked, this, &MsrDock::on_remove_destination);
-
-		hl->addWidget(dr.enabled);
-		hl->addWidget(dr.name, 1);
-		hl->addWidget(dr.orientation);
-		hl->addWidget(dr.remove);
+		vl->addWidget(dr.orientation);
 
 		dr.server = new QLineEdit(QString::fromStdString(d.server_url), card);
 		dr.server->setPlaceholderText(QString::fromUtf8(obs_module_text("DestinationServer")));
-		dr.server->setMinimumWidth(200);
+		dr.server->setMinimumWidth(120);
+		dr.server->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
 		dr.key = new QLineEdit(card);
 		dr.key->setEchoMode(QLineEdit::Password);
 		dr.key->setPlaceholderText(QString::fromUtf8(obs_module_text("DestinationKey")));
 		dr.key->setText(QString::fromStdString(d.stream_key));
-		dr.key->setMinimumWidth(200);
+		dr.key->setMinimumWidth(120);
+		dr.key->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
 		auto *tracks = new QWidget(card);
 		auto *tl = new QHBoxLayout(tracks);
@@ -434,7 +501,6 @@ void MsrDock::rebuild_dest_list()
 		}
 		tl->addStretch(1);
 
-		vl->addWidget(top);
 		vl->addWidget(new QLabel(QString::fromUtf8(obs_module_text("DestinationServer")), card));
 		vl->addWidget(dr.server);
 		vl->addWidget(new QLabel(QString::fromUtf8(obs_module_text("DestinationKey")), card));
@@ -706,4 +772,68 @@ void MsrDock::on_split_mode_changed(int)
 		split_size_label_->setVisible(by_size);
 	if (split_size_mb_)
 		split_size_mb_->setVisible(by_size);
+}
+
+QWidget *MsrDock::floating_host() const
+{
+	QWidget *w = const_cast<MsrDock *>(this);
+	while (w) {
+		if (qobject_cast<QDockWidget *>(w))
+			return w;
+		w = w->parentWidget();
+	}
+	return const_cast<MsrDock *>(this);
+}
+
+void MsrDock::save_window_geometry()
+{
+	QWidget *host = floating_host();
+	if (!host)
+		return;
+	config_t *cfg = obs_frontend_get_user_config();
+	if (!cfg)
+		cfg = obs_frontend_get_app_config();
+	if (!cfg)
+		return;
+	const QByteArray geo = host->saveGeometry().toBase64();
+	config_set_string(cfg, "obs-multi-source-record", "DockGeometry", geo.constData());
+	if (main_splitter_) {
+		const QByteArray sp = main_splitter_->saveState().toBase64();
+		config_set_string(cfg, "obs-multi-source-record", "DockSplitter", sp.constData());
+	}
+	config_save_safe(cfg, "tmp", nullptr);
+}
+
+void MsrDock::restore_window_geometry()
+{
+	config_t *cfg = obs_frontend_get_user_config();
+	if (!cfg)
+		cfg = obs_frontend_get_app_config();
+	if (!cfg)
+		return;
+	QWidget *host = floating_host();
+	const char *geo = config_get_string(cfg, "obs-multi-source-record", "DockGeometry");
+	if (host && geo && *geo) {
+		const QByteArray bytes = QByteArray::fromBase64(QByteArray(geo));
+		if (!bytes.isEmpty())
+			host->restoreGeometry(bytes);
+	}
+	const char *sp = config_get_string(cfg, "obs-multi-source-record", "DockSplitter");
+	if (main_splitter_ && sp && *sp) {
+		const QByteArray bytes = QByteArray::fromBase64(QByteArray(sp));
+		if (!bytes.isEmpty())
+			main_splitter_->restoreState(bytes);
+	}
+}
+
+void MsrDock::showEvent(QShowEvent *event)
+{
+	QWidget::showEvent(event);
+	restore_window_geometry();
+}
+
+void MsrDock::hideEvent(QHideEvent *event)
+{
+	save_window_geometry();
+	QWidget::hideEvent(event);
 }

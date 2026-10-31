@@ -22,6 +22,8 @@ class QPushButton;
 class QLabel;
 class QSpinBox;
 class QGroupBox;
+class QScrollArea;
+class QSplitter;
 
 struct MsrSourceRow {
 	QCheckBox *enabled = nullptr;
@@ -62,8 +64,15 @@ public slots:
 	void update_recording_state(bool recording);
 	void on_split_mode_changed(int index);
 
+protected:
+	void showEvent(QShowEvent *event) override;
+	void hideEvent(QHideEvent *event) override;
+
 private:
 	void build_ui();
+	void save_window_geometry();
+	void restore_window_geometry();
+	QWidget *floating_host() const;
 	void load_from_controller();
 	void apply_to_controller();
 	void rebuild_source_list();
@@ -71,6 +80,9 @@ private:
 	QStringList enumerate_sources() const;
 	QStringList enumerate_audio_sources() const;
 
+	QScrollArea *outer_scroll_ = nullptr;
+	QScrollArea *source_scroll_ = nullptr;
+	QSplitter *main_splitter_ = nullptr;
 	QVBoxLayout *source_list_layout_ = nullptr;
 	std::vector<MsrSourceRow> rows_;
 	QVBoxLayout *dest_list_layout_ = nullptr;
