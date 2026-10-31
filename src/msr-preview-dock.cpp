@@ -85,7 +85,6 @@ inline void get_scale_and_center(int baseCX, int baseCY, int windowCX, int windo
 
 struct EnumItemsCtx {
 	QListWidget *list;
-	MsrPreviewDock *dock;
 };
 
 bool enum_scene_items_cb(obs_scene_t *, obs_sceneitem_t *item, void *param)
@@ -95,53 +94,11 @@ bool enum_scene_items_cb(obs_scene_t *, obs_sceneitem_t *item, void *param)
 	const char *name = obs_source_get_name(src);
 	if (!name || !*name)
 		return true;
-
-	auto *vc = MsrVerticalCanvas::instance();
-	const QString qname = QString::fromUtf8(name);
-
-	auto *row_item = new QListWidgetItem();
-	row_item->setData(Qt::UserRole, qname);
-	row_item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
-	ctx->list->insertItem(0, row_item);
-
-	auto *row = new QWidget(ctx->list);
-	auto *hl = new QHBoxLayout(row);
-	hl->setContentsMargins(2, 0, 2, 0);
-	hl->setSpacing(4);
-
-	auto *vis = new QCheckBox(row);
-	vis->setToolTip(QString::fromUtf8(obs_module_text("VerticalVideoToggleTip")));
-	vis->setChecked(obs_sceneitem_visible(item));
-	vis->setText(QString::fromUtf8("V"));
-
-	auto *aud = new QToolButton(row);
-	aud->setCheckable(true);
-	aud->setAutoRaise(true);
-	aud->setText(QString::fromUtf8("A"));
-	aud->setToolTip(QString::fromUtf8(obs_module_text("VerticalAudioToggleTip")));
-	aud->setChecked(vc ? vc->item_audio_enabled(name) : true);
-	aud->setStyleSheet(QStringLiteral(
-		"QToolButton:checked { color: #6c6; font-weight: bold; }"
-		"QToolButton:!checked { color: #666; }"));
-
-	auto *lab = new QLabel(qname, row);
-	hl->addWidget(vis);
-	hl->addWidget(aud);
-	hl->addWidget(lab, 1);
-
-	ctx->list->setItemWidget(row_item, row);
-	row_item->setSizeHint(row->sizeHint().expandedTo(QSize(0, 22)));
-
-	QObject::connect(vis, &QCheckBox::toggled, ctx->list, [qname](bool on) {
-		auto *v = MsrVerticalCanvas::instance();
-		if (v)
-			v->set_item_visible(qname.toStdString(), on);
-	});
-	QObject::connect(aud, &QToolButton::toggled, ctx->list, [qname](bool on) {
-		auto *v = MsrVerticalCanvas::instance();
-		if (v)
-			v->set_item_audio_enabled(qname.toStdString(), on);
-	});
+	/* Names only — vertical V/A toggles live in the main OBS Sources list. */
+	auto *row = new QListWidgetItem(QString::fromUtf8(name));
+	row->setData(Qt::UserRole, QString::fromUtf8(name));
+	row->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+	ctx->list->insertItem(0, row);
 	return true;
 }
 
@@ -887,7 +844,7 @@ void MsrPreviewDock::rebuild_source_list()
 		updating_ui_ = false;
 		return;
 	}
-	EnumItemsCtx ctx{source_list_, this};
+	EnumItemsCtx ctx{source_list_};
 	obs_scene_enum_items(scene, enum_scene_items_cb, &ctx);
 	obs_scene_release(scene);
 
