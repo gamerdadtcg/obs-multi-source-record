@@ -1373,9 +1373,13 @@ void MsrController::ws_vertical_status(obs_data_t *request_data, obs_data_t *res
 			vec2 pos; obs_sceneitem_get_pos(item, &pos);
 			obs_data_set_double(row, "pos_x", pos.x);
 			obs_data_set_double(row, "pos_y", pos.y);
+			vec2 scale; obs_sceneitem_get_scale(item, &scale);
+			obs_data_set_double(row, "scale_x", scale.x);
+			obs_data_set_double(row, "scale_y", scale.y);
 			vec2 bounds; obs_sceneitem_get_bounds(item, &bounds);
 			obs_data_set_double(row, "bounds_x", bounds.x);
 			obs_data_set_double(row, "bounds_y", bounds.y);
+			obs_data_set_int(row, "bounds_type", (int)obs_sceneitem_get_bounds_type(item));
 			obs_data_array_push_back(arr, row);
 			obs_data_release(row);
 			return true;
