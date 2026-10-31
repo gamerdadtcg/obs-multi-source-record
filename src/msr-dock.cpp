@@ -24,7 +24,6 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QPushButton>
 #include <QLabel>
 #include <QSpinBox>
-#include <QGroupBox>
 #include <QScrollArea>
 #include <QFileDialog>
 #include <QFrame>
@@ -35,7 +34,8 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QHideEvent>
 #include <QShowEvent>
 #include <QSizeGrip>
-#include <QSplitter>
+#include <QToolButton>
+#include <QObject>
 
 #include <string>
 
@@ -61,6 +61,51 @@ bool enum_sources_cb(void *data, obs_source_t *source)
 	return true;
 }
 
+
+struct SectionWidgets {
+	QWidget *section = nullptr;
+	QToolButton *toggle = nullptr;
+	QWidget *body = nullptr;
+};
+
+SectionWidgets make_collapsible(QWidget *parent, const QString &title, bool default_open)
+{
+	SectionWidgets sw;
+	sw.section = new QWidget(parent);
+	auto *vl = new QVBoxLayout(sw.section);
+	vl->setContentsMargins(0, 0, 0, 0);
+	vl->setSpacing(2);
+
+	sw.toggle = new QToolButton(sw.section);
+	sw.toggle->setToolButtonStyle(Qt::ToolButtonTextOnly);
+	sw.toggle->setArrowType(Qt::NoArrow);
+	sw.toggle->setCheckable(true);
+	sw.toggle->setChecked(default_open);
+	sw.toggle->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+	sw.toggle->setStyleSheet(QStringLiteral(
+		"QToolButton { border: none; font-weight: 600; text-align: left; padding: 4px 2px; }"
+		"QToolButton:hover { background: rgba(127,127,127,40); }"));
+	auto set_header = [toggle = sw.toggle, title](bool on) {
+		toggle->setText(QStringLiteral("%1  %2").arg(on ? QStringLiteral("▾") : QStringLiteral("▸"), title));
+	};
+	set_header(default_open);
+	vl->addWidget(sw.toggle);
+
+	sw.body = new QWidget(sw.section);
+	sw.body->setVisible(default_open);
+	auto *body_l = new QVBoxLayout(sw.body);
+	body_l->setContentsMargins(12, 2, 0, 4);
+	body_l->setSpacing(6);
+	vl->addWidget(sw.body);
+
+	QObject::connect(sw.toggle, &QToolButton::toggled, sw.section,
+			 [set_header, body = sw.body](bool on) {
+				 body->setVisible(on);
+				 set_header(on);
+			 });
+	return sw;
+}
+
 } // namespace
 
 MsrDock::MsrDock(QWidget *parent) : QWidget(parent)
@@ -84,13 +129,14 @@ MsrDock::~MsrDock()
 
 void MsrDock::build_ui()
 {
-	setMinimumSize(380, 520);
+	setMinimumSize(380, 480);
 	setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
 	auto *outer = new QVBoxLayout(this);
 	outer->setContentsMargins(0, 0, 0, 0);
 	outer->setSpacing(0);
 
+	/* ---- Scrollable sections ---- */
 	outer_scroll_ = new QScrollArea(this);
 	outer_scroll_->setWidgetResizable(true);
 	outer_scroll_->setFrameShape(QFrame::NoFrame);
@@ -102,7 +148,7 @@ void MsrDock::build_ui()
 	content->setMinimumWidth(340);
 	auto *root = new QVBoxLayout(content);
 	root->setContentsMargins(8, 8, 8, 8);
-	root->setSpacing(8);
+	root->setSpacing(6);
 
 	auto *title = new QLabel(QString::fromUtf8(obs_module_text("DockTitle")), content);
 	QFont f = title->font();
@@ -115,93 +161,89 @@ void MsrDock::build_ui()
 	hint->setWordWrap(true);
 	root->addWidget(hint);
 
-	main_splitter_ = new QSplitter(Qt::Vertical, content);
-	main_splitter_->setChildrenCollapsible(false);
+	auto add_section = [this, content, root](const QString &title, const char *key,
+						bool default_open) -> QWidget * {
+		SectionWidgets sw = make_collapsible(content, title, default_open);
+		sections_.push_back(SectionRef{sw.toggle, sw.body, key, default_open});
+		connect(sw.toggle, &QToolButton::toggled, this, [this](bool) { save_section_states(); });
+		root->addWidget(sw.section);
+		return sw.body;
+	};
 
-	/* ---- Sources (expands with window height; min ~8 rows) ---- */
-	auto *sources_panel = new QWidget(main_splitter_);
-	auto *sources_l = new QVBoxLayout(sources_panel);
-	sources_l->setContentsMargins(0, 0, 0, 0);
-	sources_l->setSpacing(4);
-	sources_l->addWidget(new QLabel(QString::fromUtf8(obs_module_text("VerticalSources")), sources_panel));
-
-	source_scroll_ = new QScrollArea(sources_panel);
+	/* Sources — default open */
+	auto *sources_body = add_section(QString::fromUtf8(obs_module_text("VerticalSources")), "SectionSources",
+					 true);
+	auto *sources_l = qobject_cast<QVBoxLayout *>(sources_body->layout());
+	source_scroll_ = new QScrollArea(sources_body);
 	source_scroll_->setWidgetResizable(true);
 	source_scroll_->setFrameShape(QFrame::StyledPanel);
-	source_scroll_->setMinimumHeight(8 * 28); /* ~8 source rows */
-	source_scroll_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+	source_scroll_->setMinimumHeight(8 * 28);
+	source_scroll_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::MinimumExpanding);
 	auto *source_host = new QWidget(source_scroll_);
 	source_list_layout_ = new QVBoxLayout(source_host);
 	source_list_layout_->setContentsMargins(4, 4, 4, 4);
 	source_list_layout_->setSpacing(4);
 	source_list_layout_->addStretch(1);
 	source_scroll_->setWidget(source_host);
-	sources_l->addWidget(source_scroll_, 1);
-
-	auto *refresh = new QPushButton(QString::fromUtf8(obs_module_text("RefreshSources")), sources_panel);
+	sources_l->addWidget(source_scroll_);
+	auto *refresh = new QPushButton(QString::fromUtf8(obs_module_text("RefreshSources")), sources_body);
 	connect(refresh, &QPushButton::clicked, this, &MsrDock::refresh_sources);
 	sources_l->addWidget(refresh);
 
-	/* ---- Lower settings stack ---- */
-	auto *lower = new QWidget(main_splitter_);
-	auto *lower_l = new QVBoxLayout(lower);
-	lower_l->setContentsMargins(0, 0, 0, 0);
-	lower_l->setSpacing(8);
-
+	/* Output — default closed */
+	auto *output_body = add_section(QString::fromUtf8(obs_module_text("Output")), "SectionOutput", false);
+	auto *output_l = qobject_cast<QVBoxLayout *>(output_body->layout());
 	auto *folder_row = new QHBoxLayout();
-	folder_edit_ = new QLineEdit(lower);
+	folder_edit_ = new QLineEdit(output_body);
 	folder_edit_->setPlaceholderText(QString::fromUtf8(obs_module_text("OutputFolder")));
-	auto *browse = new QPushButton(QString::fromUtf8(obs_module_text("Browse")), lower);
+	auto *browse = new QPushButton(QString::fromUtf8(obs_module_text("Browse")), output_body);
 	connect(browse, &QPushButton::clicked, this, &MsrDock::on_browse_folder);
 	folder_row->addWidget(folder_edit_, 1);
 	folder_row->addWidget(browse);
-	lower_l->addLayout(folder_row);
-
-	pattern_edit_ = new QLineEdit(lower);
+	output_l->addLayout(folder_row);
+	output_l->addWidget(new QLabel(QString::fromUtf8(obs_module_text("FilenamePattern")), output_body));
+	pattern_edit_ = new QLineEdit(output_body);
 	pattern_edit_->setPlaceholderText(QStringLiteral("{source}_{orientation}_{date}_{time}"));
-	lower_l->addWidget(new QLabel(QString::fromUtf8(obs_module_text("FilenamePattern")), lower));
-	lower_l->addWidget(pattern_edit_);
-
+	output_l->addWidget(pattern_edit_);
 	auto *fmt_row = new QHBoxLayout();
-	container_combo_ = new QComboBox(lower);
+	container_combo_ = new QComboBox(output_body);
 	container_combo_->addItem(QStringLiteral("mkv"), QStringLiteral("mkv"));
 	container_combo_->addItem(QStringLiteral("mp4"), QStringLiteral("mp4"));
-	fmt_row->addWidget(new QLabel(QString::fromUtf8(obs_module_text("Container")), lower));
+	fmt_row->addWidget(new QLabel(QString::fromUtf8(obs_module_text("Container")), output_body));
 	fmt_row->addWidget(container_combo_, 1);
-	lower_l->addLayout(fmt_row);
+	output_l->addLayout(fmt_row);
 
-	auto *opts = new QGroupBox(QString::fromUtf8(obs_module_text("RecordingOptions")), lower);
-	auto *opts_l = new QVBoxLayout(opts);
-
-	auto_start_combo_ = new QComboBox(opts);
+	/* Recording options — default open */
+	auto *opts_body = add_section(QString::fromUtf8(obs_module_text("RecordingOptions")), "SectionRecording",
+				      true);
+	auto *opts_l = qobject_cast<QVBoxLayout *>(opts_body->layout());
+	auto_start_combo_ = new QComboBox(opts_body);
 	auto_start_combo_->addItem(QString::fromUtf8(obs_module_text("AutoStartOff")), (int)MsrAutoStartTrigger::Off);
 	auto_start_combo_->addItem(QString::fromUtf8(obs_module_text("AutoStartRecord")),
 				   (int)MsrAutoStartTrigger::Record);
 	auto_start_combo_->addItem(QString::fromUtf8(obs_module_text("AutoStartStream")),
 				   (int)MsrAutoStartTrigger::Stream);
 	auto_start_combo_->addItem(QString::fromUtf8(obs_module_text("AutoStartBoth")), (int)MsrAutoStartTrigger::Both);
-	opts_l->addWidget(new QLabel(QString::fromUtf8(obs_module_text("AutoStart")), opts));
+	opts_l->addWidget(new QLabel(QString::fromUtf8(obs_module_text("AutoStart")), opts_body));
 	opts_l->addWidget(auto_start_combo_);
-	auto *as_hint = new QLabel(QString::fromUtf8(obs_module_text("AutoStartHint")), opts);
+	auto *as_hint = new QLabel(QString::fromUtf8(obs_module_text("AutoStartHint")), opts_body);
 	as_hint->setWordWrap(true);
 	opts_l->addWidget(as_hint);
-
-	split_mode_combo_ = new QComboBox(opts);
+	split_mode_combo_ = new QComboBox(opts_body);
 	split_mode_combo_->addItem(QString::fromUtf8(obs_module_text("SplitOff")), (int)MsrSplitMode::Off);
 	split_mode_combo_->addItem(QString::fromUtf8(obs_module_text("SplitByTime")), (int)MsrSplitMode::ByTime);
 	split_mode_combo_->addItem(QString::fromUtf8(obs_module_text("SplitBySize")), (int)MsrSplitMode::BySize);
-	opts_l->addWidget(new QLabel(QString::fromUtf8(obs_module_text("FileSplit")), opts));
+	opts_l->addWidget(new QLabel(QString::fromUtf8(obs_module_text("FileSplit")), opts_body));
 	opts_l->addWidget(split_mode_combo_);
 	connect(split_mode_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
 		&MsrDock::on_split_mode_changed);
-
 	auto *split_row = new QHBoxLayout();
-	split_time_label_ = new QLabel(QString::fromUtf8(obs_module_text("SplitTimeMin")), opts);
-	split_time_min_ = new QSpinBox(opts);
+	split_time_label_ = new QLabel(QString::fromUtf8(obs_module_text("SplitTimeMin")), opts_body);
+	split_time_min_ = new QSpinBox(opts_body);
 	split_time_min_->setRange(1, 24 * 60);
 	split_time_min_->setSuffix(QStringLiteral(" min"));
-	split_size_label_ = new QLabel(QString::fromUtf8(obs_module_text("SplitSizeMb")), opts);
-	split_size_mb_ = new QSpinBox(opts);
+	split_size_label_ = new QLabel(QString::fromUtf8(obs_module_text("SplitSizeMb")), opts_body);
+	split_size_mb_ = new QSpinBox(opts_body);
 	split_size_mb_->setRange(50, 100000);
 	split_size_mb_->setSuffix(QStringLiteral(" MB"));
 	split_row->addWidget(split_time_label_);
@@ -210,29 +252,25 @@ void MsrDock::build_ui()
 	split_row->addWidget(split_size_mb_);
 	split_row->addStretch(1);
 	opts_l->addLayout(split_row);
-	lower_l->addWidget(opts);
 
-	/* Replay buffer — own section, before Advanced */
-	auto *replay_box = new QGroupBox(QString::fromUtf8(obs_module_text("ReplayBuffer")), lower);
-	auto *replay_l = new QVBoxLayout(replay_box);
+	/* Replay buffer — default closed */
+	auto *replay_body = add_section(QString::fromUtf8(obs_module_text("ReplayBuffer")), "SectionReplay", false);
+	auto *replay_l = qobject_cast<QVBoxLayout *>(replay_body->layout());
 	auto *replay_row = new QHBoxLayout();
-	replay_seconds_ = new QSpinBox(replay_box);
+	replay_seconds_ = new QSpinBox(replay_body);
 	replay_seconds_->setRange(5, 300);
 	replay_seconds_->setSuffix(QStringLiteral(" s"));
-	replay_row->addWidget(new QLabel(QString::fromUtf8(obs_module_text("ReplaySeconds")), replay_box));
+	replay_row->addWidget(new QLabel(QString::fromUtf8(obs_module_text("ReplaySeconds")), replay_body));
 	replay_row->addWidget(replay_seconds_);
 	replay_row->addStretch(1);
 	replay_l->addLayout(replay_row);
-	auto *rb_hint = new QLabel(QString::fromUtf8(obs_module_text("ReplayHint")), replay_box);
+	auto *rb_hint = new QLabel(QString::fromUtf8(obs_module_text("ReplayHint")), replay_body);
 	rb_hint->setWordWrap(true);
 	replay_l->addWidget(rb_hint);
-	lower_l->addWidget(replay_box);
 
-	advanced_box_ = new QGroupBox(QString::fromUtf8(obs_module_text("Advanced")), lower);
-	advanced_box_->setCheckable(true);
-	advanced_box_->setChecked(false);
-	auto *adv = new QVBoxLayout(advanced_box_);
-
+	/* Advanced — default closed */
+	advanced_box_ = add_section(QString::fromUtf8(obs_module_text("Advanced")), "SectionAdvanced", false);
+	auto *adv = qobject_cast<QVBoxLayout *>(advanced_box_->layout());
 	encoder_combo_ = new QComboBox(advanced_box_);
 	encoder_combo_->addItem(QString::fromUtf8(obs_module_text("EncoderAuto")), QStringLiteral("auto"));
 	encoder_combo_->addItem(QStringLiteral("NVENC"), QStringLiteral("nvenc"));
@@ -241,19 +279,16 @@ void MsrDock::build_ui()
 	encoder_combo_->addItem(QStringLiteral("x264"), QStringLiteral("x264"));
 	adv->addWidget(new QLabel(QString::fromUtf8(obs_module_text("VideoEncoder")), advanced_box_));
 	adv->addWidget(encoder_combo_);
-
 	video_bitrate_ = new QSpinBox(advanced_box_);
 	video_bitrate_->setRange(1000, 100000);
 	video_bitrate_->setSuffix(QStringLiteral(" kbps"));
 	adv->addWidget(new QLabel(QString::fromUtf8(obs_module_text("VideoBitrate")), advanced_box_));
 	adv->addWidget(video_bitrate_);
-
 	audio_bitrate_ = new QSpinBox(advanced_box_);
 	audio_bitrate_->setRange(64, 512);
 	audio_bitrate_->setSuffix(QStringLiteral(" kbps"));
 	adv->addWidget(new QLabel(QString::fromUtf8(obs_module_text("AudioBitrate")), advanced_box_));
 	adv->addWidget(audio_bitrate_);
-
 	auto *vert_row = new QHBoxLayout();
 	vert_w_ = new QSpinBox(advanced_box_);
 	vert_w_->setRange(360, 2160);
@@ -264,12 +299,10 @@ void MsrDock::build_ui()
 	vert_row->addWidget(new QLabel(QStringLiteral("x"), advanced_box_));
 	vert_row->addWidget(vert_h_);
 	adv->addLayout(vert_row);
-	lower_l->addWidget(advanced_box_);
 
-	multistream_box_ = new QGroupBox(QString::fromUtf8(obs_module_text("Multistream")), lower);
-	multistream_box_->setCheckable(true);
-	multistream_box_->setChecked(false);
-	auto *ms = new QVBoxLayout(multistream_box_);
+	/* Multistream — default closed */
+	multistream_box_ = add_section(QString::fromUtf8(obs_module_text("Multistream")), "SectionMultistream", false);
+	auto *ms = qobject_cast<QVBoxLayout *>(multistream_box_->layout());
 	auto *ms_hint = new QLabel(QString::fromUtf8(obs_module_text("MultistreamHint")), multistream_box_);
 	ms_hint->setWordWrap(true);
 	ms->addWidget(ms_hint);
@@ -286,47 +319,47 @@ void MsrDock::build_ui()
 	stream_status_label_ = new QLabel(QString::fromUtf8(obs_module_text("StatusStreamIdle")), multistream_box_);
 	stream_status_label_->setWordWrap(true);
 	ms->addWidget(stream_status_label_);
-	lower_l->addWidget(multistream_box_);
+
+	root->addStretch(1);
+	outer_scroll_->setWidget(content);
+	outer->addWidget(outer_scroll_, 1);
+
+	/* ---- Always-visible action bar ---- */
+	auto *footer = new QWidget(this);
+	auto *footer_l = new QVBoxLayout(footer);
+	footer_l->setContentsMargins(8, 6, 8, 6);
+	footer_l->setSpacing(4);
 
 	auto *btn_row = new QHBoxLayout();
-	auto *save_btn = new QPushButton(QString::fromUtf8(obs_module_text("Save")), lower);
+	auto *save_btn = new QPushButton(QString::fromUtf8(obs_module_text("Save")), footer);
 	connect(save_btn, &QPushButton::clicked, this, &MsrDock::on_save);
-	start_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("StartRecording")), lower);
+	start_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("StartRecording")), footer);
 	connect(start_btn_, &QPushButton::clicked, this, &MsrDock::on_start_stop);
-	pause_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("PauseRecording")), lower);
+	pause_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("PauseRecording")), footer);
 	connect(pause_btn_, &QPushButton::clicked, this, &MsrDock::on_pause_resume);
 	pause_btn_->setEnabled(false);
-	chapter_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("AddChapter")), lower);
+	chapter_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("AddChapter")), footer);
 	connect(chapter_btn_, &QPushButton::clicked, this, &MsrDock::on_add_chapter);
 	chapter_btn_->setEnabled(false);
-	replay_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("SaveReplay")), lower);
+	replay_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("SaveReplay")), footer);
 	connect(replay_btn_, &QPushButton::clicked, this, &MsrDock::on_save_replay);
 	btn_row->addWidget(save_btn);
 	btn_row->addWidget(start_btn_, 1);
 	btn_row->addWidget(pause_btn_);
 	btn_row->addWidget(chapter_btn_);
 	btn_row->addWidget(replay_btn_);
-	lower_l->addLayout(btn_row);
+	footer_l->addLayout(btn_row);
 
-	status_label_ = new QLabel(QString::fromUtf8(obs_module_text("StatusIdle")), lower);
+	status_label_ = new QLabel(QString::fromUtf8(obs_module_text("StatusIdle")), footer);
 	status_label_->setWordWrap(true);
-	lower_l->addWidget(status_label_);
+	footer_l->addWidget(status_label_);
 
 	auto *grip_row = new QHBoxLayout();
 	grip_row->addStretch(1);
-	grip_row->addWidget(new QSizeGrip(content), 0, Qt::AlignBottom | Qt::AlignRight);
-	lower_l->addLayout(grip_row);
-	lower_l->addStretch(0);
+	grip_row->addWidget(new QSizeGrip(footer), 0, Qt::AlignBottom | Qt::AlignRight);
+	footer_l->addLayout(grip_row);
 
-	main_splitter_->addWidget(sources_panel);
-	main_splitter_->addWidget(lower);
-	main_splitter_->setStretchFactor(0, 2);
-	main_splitter_->setStretchFactor(1, 3);
-	main_splitter_->setSizes({280, 520});
-	root->addWidget(main_splitter_, 1);
-
-	outer_scroll_->setWidget(content);
-	outer->addWidget(outer_scroll_, 1);
+	outer->addWidget(footer, 0);
 }
 
 QStringList MsrDock::enumerate_sources() const
@@ -785,6 +818,36 @@ QWidget *MsrDock::floating_host() const
 	return const_cast<MsrDock *>(this);
 }
 
+void MsrDock::save_section_states()
+{
+	config_t *cfg = obs_frontend_get_user_config();
+	if (!cfg)
+		cfg = obs_frontend_get_app_config();
+	if (!cfg)
+		return;
+	for (const SectionRef &sec : sections_) {
+		if (!sec.toggle || !sec.key)
+			continue;
+		config_set_bool(cfg, "obs-multi-source-record", sec.key, sec.toggle->isChecked());
+	}
+	config_save_safe(cfg, "tmp", nullptr);
+}
+
+void MsrDock::restore_section_states()
+{
+	config_t *cfg = obs_frontend_get_user_config();
+	if (!cfg)
+		cfg = obs_frontend_get_app_config();
+	for (const SectionRef &sec : sections_) {
+		if (!sec.toggle || !sec.key)
+			continue;
+		bool open = sec.default_open;
+		if (cfg && config_has_user_value(cfg, "obs-multi-source-record", sec.key))
+			open = config_get_bool(cfg, "obs-multi-source-record", sec.key);
+		sec.toggle->setChecked(open);
+	}
+}
+
 void MsrDock::save_window_geometry()
 {
 	QWidget *host = floating_host();
@@ -797,11 +860,8 @@ void MsrDock::save_window_geometry()
 		return;
 	const QByteArray geo = host->saveGeometry().toBase64();
 	config_set_string(cfg, "obs-multi-source-record", "DockGeometry", geo.constData());
-	if (main_splitter_) {
-		const QByteArray sp = main_splitter_->saveState().toBase64();
-		config_set_string(cfg, "obs-multi-source-record", "DockSplitter", sp.constData());
-	}
 	config_save_safe(cfg, "tmp", nullptr);
+	save_section_states();
 }
 
 void MsrDock::restore_window_geometry()
@@ -818,12 +878,7 @@ void MsrDock::restore_window_geometry()
 		if (!bytes.isEmpty())
 			host->restoreGeometry(bytes);
 	}
-	const char *sp = config_get_string(cfg, "obs-multi-source-record", "DockSplitter");
-	if (main_splitter_ && sp && *sp) {
-		const QByteArray bytes = QByteArray::fromBase64(QByteArray(sp));
-		if (!bytes.isEmpty())
-			main_splitter_->restoreState(bytes);
-	}
+	restore_section_states();
 }
 
 void MsrDock::showEvent(QShowEvent *event)

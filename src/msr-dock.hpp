@@ -21,9 +21,8 @@ class QLineEdit;
 class QPushButton;
 class QLabel;
 class QSpinBox;
-class QGroupBox;
+class QToolButton;
 class QScrollArea;
-class QSplitter;
 
 struct MsrSourceRow {
 	QCheckBox *enabled = nullptr;
@@ -72,6 +71,8 @@ private:
 	void build_ui();
 	void save_window_geometry();
 	void restore_window_geometry();
+	void save_section_states();
+	void restore_section_states();
 	QWidget *floating_host() const;
 	void load_from_controller();
 	void apply_to_controller();
@@ -82,8 +83,14 @@ private:
 
 	QScrollArea *outer_scroll_ = nullptr;
 	QScrollArea *source_scroll_ = nullptr;
-	QSplitter *main_splitter_ = nullptr;
 	QVBoxLayout *source_list_layout_ = nullptr;
+	struct SectionRef {
+		QToolButton *toggle = nullptr;
+		QWidget *body = nullptr;
+		const char *key = nullptr;
+		bool default_open = false;
+	};
+	std::vector<SectionRef> sections_;
 	std::vector<MsrSourceRow> rows_;
 	QVBoxLayout *dest_list_layout_ = nullptr;
 	std::vector<MsrDestRow> dest_rows_;
@@ -109,6 +116,6 @@ private:
 	QPushButton *stream_btn_ = nullptr;
 	QLabel *status_label_ = nullptr;
 	QLabel *stream_status_label_ = nullptr;
-	QGroupBox *advanced_box_ = nullptr;
-	QGroupBox *multistream_box_ = nullptr;
+	QWidget *advanced_box_ = nullptr;
+	QWidget *multistream_box_ = nullptr;
 };
