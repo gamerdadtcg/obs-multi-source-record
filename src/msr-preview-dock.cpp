@@ -216,6 +216,26 @@ bool item_at_pos_cb(obs_scene_t *, obs_sceneitem_t *item, void *param)
 	return true;
 }
 
+
+obs_sceneitem_t *first_selected_item(obs_scene_t *scene)
+{
+	if (!scene)
+		return nullptr;
+	struct Ctx {
+		obs_sceneitem_t *item;
+	} ctx{nullptr};
+	obs_scene_enum_items(
+		scene,
+		[](obs_scene_t *, obs_sceneitem_t *it, void *p) {
+			auto *c = static_cast<Ctx *>(p);
+			if (obs_sceneitem_selected(it))
+				c->item = it;
+			return true;
+		},
+		&ctx);
+	return ctx.item;
+}
+
 } // namespace
 
 /* ---- MsrPreviewDisplay -------------------------------------------------- */
@@ -231,7 +251,7 @@ MsrPreviewDisplay::MsrPreviewDisplay(QWidget *parent) : QWidget(parent)
 	setMinimumSize(135, 240); /* 9:16 phone proportions */
 	setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 	setMouseTracking(true);
-	setFocusPolicy(Qt::ClickFocus);
+	setFocusPolicy(Qt::StrongFocus);
 	matrix4_identity(&item_to_screen_);
 	matrix4_identity(&screen_to_item_);
 }
@@ -762,14 +782,20 @@ vec3 MsrPreviewDisplay::snap_offset(const vec3 &tl, const vec3 &br) const
 
 void MsrPreviewDisplay::update_hover_cursor(const vec2 &world)
 {
-	obs_sceneitem_t *hit = item_at_pos(world);
+	auto *vc = MsrVerticalCanvas::instance();
+	obs_scene_t *scene = vc ? vc->program_scene() : nullptr;
+	obs_sceneitem_t *selected = scene ? first_selected_item(scene) : nullptr;
+	if (scene)
+		obs_scene_release(scene);
+
 	MsrItemHandle h = MsrItemHandle::None;
-	if (hit && obs_sceneitem_selected(hit) && !obs_sceneitem_locked(hit))
-		h = handle_at_pos(hit, world);
+	if (selected && !obs_sceneitem_locked(selected))
+		h = handle_at_pos(selected, world);
 
 	const uint32_t flags = (uint32_t)h;
 	if (h == MsrItemHandle::None) {
-		if (hit && obs_sceneitem_selected(hit) && !obs_sceneitem_locked(hit))
+		/* Any press moves the locked selection, so show move cursor. */
+		if (selected && !obs_sceneitem_locked(selected))
 			setCursor(Qt::SizeAllCursor);
 		else
 			unsetCursor();
@@ -973,6 +999,8 @@ void MsrPreviewDisplay::mousePressEvent(QMouseEvent *event)
 		return;
 	}
 
+	setFocus(Qt::MouseFocusReason);
+
 	QSize ps = pixel_size(this);
 	update_preview_layout((uint32_t)ps.width(), (uint32_t)ps.height());
 
@@ -992,50 +1020,22 @@ void MsrPreviewDisplay::mousePressEvent(QMouseEvent *event)
 		return;
 	}
 
-	/* Prefer handles on already-selected items, then topmost hit. */
-	obs_sceneitem_t *selected_hit = nullptr;
+	/*
+	 * Selection is locked to the dock source list. Preview clicks never
+	 * select, switch, or clear — they only drag/resize the current item.
+	 */
+	obs_sceneitem_t *selected = first_selected_item(scene);
 	MsrItemHandle handle = MsrItemHandle::None;
-	MsrSelHandleCtx shctx{&world, nullptr, MsrItemHandle::None, this};
-	obs_scene_enum_items(scene, msr_selected_handle_cb, &shctx);
-	if (shctx.item) {
-		selected_hit = shctx.item;
-		handle = shctx.handle;
-	}
-
-	obs_sceneitem_t *hit = selected_hit ? selected_hit : item_at_pos(world);
-
-	/* Select on press (empty click clears). */
-	const bool shift = QGuiApplication::keyboardModifiers() & Qt::ShiftModifier;
-	if (!shift) {
-		obs_scene_enum_items(
-			scene,
-			[](obs_scene_t *, obs_sceneitem_t *it, void *) {
-				obs_sceneitem_select(it, false);
-				return true;
-			},
-			nullptr);
-	}
-	if (hit)
-		obs_sceneitem_select(hit, true);
-
-	const bool locked = hit && obs_sceneitem_locked(hit);
-	stretch_item_ = (hit && !locked) ? hit : nullptr;
-	mouse_over_items_ = stretch_item_ != nullptr;
-	if (stretch_item_) {
-		if (handle == MsrItemHandle::None)
-			handle = handle_at_pos(stretch_item_, world);
+	if (selected && !obs_sceneitem_locked(selected)) {
+		handle = handle_at_pos(selected, world);
+		stretch_item_ = selected;
+		mouse_over_items_ = true;
 		prepare_stretch(stretch_item_, handle);
 		update_hover_cursor(world);
 	} else {
+		stretch_item_ = nullptr;
 		stretch_handle_ = MsrItemHandle::None;
 		unsetCursor();
-	}
-
-	if (hit) {
-		const char *n = obs_source_get_name(obs_sceneitem_get_source(hit));
-		emit selection_changed(n ? QString::fromUtf8(n) : QString());
-	} else {
-		emit selection_changed(QString());
 	}
 
 	obs_scene_release(scene);
@@ -1114,6 +1114,11 @@ void MsrPreviewDisplay::keyPressEvent(QKeyEvent *event)
 	float step = (event->modifiers() & Qt::ShiftModifier) ? 10.0f : 1.0f;
 	bool handled = false;
 	switch (event->key()) {
+	case Qt::Key_Escape:
+		vc->clear_selection();
+		emit selection_changed(QString());
+		handled = true;
+		break;
 	case Qt::Key_Left:
 		handled = vc->nudge_selected(-step, 0.0f);
 		break;
@@ -1209,7 +1214,9 @@ void MsrPreviewDock::build_ui()
 	source_list_->setMinimumHeight(80);
 	source_list_->setMaximumHeight(180);
 	root->addWidget(source_list_);
+		connect(source_list_, &QListWidget::itemClicked, this, &MsrPreviewDock::on_list_item_clicked);
 	connect(source_list_, &QListWidget::currentItemChanged, this, [this](QListWidgetItem *, QListWidgetItem *) {
+		list_row_changed_ = true;
 		on_list_selection_changed();
 	});
 	if (display_)
@@ -1326,9 +1333,32 @@ void MsrPreviewDock::on_list_selection_changed()
 		return;
 	const QString name = selected_source_name();
 	auto *vc = MsrVerticalCanvas::instance();
-	if (!vc || name.isEmpty())
+	if (!vc)
 		return;
+	if (name.isEmpty()) {
+		vc->clear_selection();
+		return;
+	}
 	vc->select_source(name.toStdString(), true);
+}
+
+void MsrPreviewDock::on_list_item_clicked(QListWidgetItem *item)
+{
+	if (updating_ui_ || !item)
+		return;
+	/* New row: currentItemChanged already selected. Same-row re-click: deselect. */
+	if (list_row_changed_) {
+		list_row_changed_ = false;
+		return;
+	}
+	auto *vc = MsrVerticalCanvas::instance();
+	if (!vc)
+		return;
+	vc->clear_selection();
+	updating_ui_ = true;
+	source_list_->clearSelection();
+	source_list_->setCurrentItem(nullptr);
+	updating_ui_ = false;
 }
 
 void MsrPreviewDock::on_preview_selection_changed(const QString &name)
@@ -1336,8 +1366,10 @@ void MsrPreviewDock::on_preview_selection_changed(const QString &name)
 	if (!source_list_ || updating_ui_)
 		return;
 	updating_ui_ = true;
+	list_row_changed_ = false;
 	if (name.isEmpty()) {
 		source_list_->clearSelection();
+		source_list_->setCurrentItem(nullptr);
 	} else {
 		for (int i = 0; i < source_list_->count(); i++) {
 			auto *it = source_list_->item(i);

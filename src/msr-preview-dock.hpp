@@ -164,6 +164,7 @@ private slots:
 	void on_move_down();
 	void on_fit_selected();
 	void on_list_selection_changed();
+	void on_list_item_clicked(QListWidgetItem *item);
 	void on_preview_selection_changed(const QString &name);
 	void on_audio_button_clicked();
 	void on_snap_toggled(bool checked);
@@ -181,4 +182,5 @@ private:
 	QLabel *hint_label_ = nullptr;
 	QCheckBox *snap_check_ = nullptr;
 	bool updating_ui_ = false;
+	bool list_row_changed_ = false;
 };
