@@ -87,6 +87,11 @@ bool MsrVerticalCanvas::ensure(uint32_t width, uint32_t height)
 		width = 1080;
 	if (height < 2)
 		height = 1920;
+	/* Vertical canvas is always portrait (phone). Never keep main 1920x1080. */
+	if (width >= height) {
+		width = 1080;
+		height = 1920;
+	}
 	width += (width & 1);
 	height += (height & 1);
 

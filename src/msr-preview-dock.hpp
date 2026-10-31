@@ -11,6 +11,7 @@ the Free Software Foundation; either version 2 of the License, or
 #pragma once
 
 #include <QWidget>
+#include <QSize>
 #include <QString>
 #include <obs.h>
 #include <graphics/vec2.h>
@@ -116,6 +117,9 @@ class MsrPreviewDock : public QWidget {
 public:
 	explicit MsrPreviewDock(QWidget *parent = nullptr);
 	~MsrPreviewDock() override = default;
+
+	QSize sizeHint() const override { return QSize(280, 720); }
+	QSize minimumSizeHint() const override { return QSize(200, 420); }
 
 public slots:
 	void refresh_all();

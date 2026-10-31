@@ -156,7 +156,7 @@ MsrPreviewDisplay::MsrPreviewDisplay(QWidget *parent) : QWidget(parent)
 	setAttribute(Qt::WA_OpaquePaintEvent);
 	setAttribute(Qt::WA_DontCreateNativeAncestors);
 	setAttribute(Qt::WA_NativeWindow);
-	setMinimumSize(90, 160);
+	setMinimumSize(135, 240); /* 9:16 phone proportions */
 	setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 	setMouseTracking(true);
 	setFocusPolicy(Qt::ClickFocus);
@@ -174,13 +174,19 @@ void MsrPreviewDisplay::ensure_canvas()
 	auto *vc = MsrVerticalCanvas::instance();
 	if (!vc)
 		return;
+	/* Always portrait phone canvas — never inherit main 1920x1080 OVI. */
 	int w = 1080, h = 1920;
 	if (auto *c = MsrController::instance()) {
 		auto s = c->settings();
-		w = s.vertical_width;
-		h = s.vertical_height;
+		if (s.vertical_width > 1 && s.vertical_height > 1 && s.vertical_width < s.vertical_height) {
+			w = s.vertical_width;
+			h = s.vertical_height;
+		}
 	}
 	vc->ensure((uint32_t)w, (uint32_t)h);
+	/* Re-force if something left the canvas landscape. */
+	if (vc->width() >= vc->height() || vc->width() == 0 || vc->height() == 0)
+		vc->ensure(1080, 1920);
 	vc->follow_main_scene();
 }
 
@@ -287,9 +293,16 @@ QPaintEngine *MsrPreviewDisplay::paintEngine() const
 
 void MsrPreviewDisplay::update_preview_layout(uint32_t cx, uint32_t cy)
 {
+	/* Projection/scale MUST use the vertical canvas base (phone), never main OVI. */
 	auto *vc = MsrVerticalCanvas::instance();
-	world_cx_ = vc && vc->width() ? vc->width() : 1080;
-	world_cy_ = vc && vc->height() ? vc->height() : 1920;
+	uint32_t w = 1080;
+	uint32_t h = 1920;
+	if (vc && vc->width() > 1 && vc->height() > 1 && vc->width() < vc->height()) {
+		w = vc->width();
+		h = vc->height();
+	}
+	world_cx_ = w;
+	world_cy_ = h;
 	get_scale_and_center((int)world_cx_, (int)world_cy_, (int)cx, (int)cy, preview_x_, preview_y_, preview_scale_);
 }
 
@@ -321,10 +334,16 @@ void MsrPreviewDisplay::draw_preview(void *param, uint32_t cx, uint32_t cy)
 	if (newCY < 1)
 		newCY = 1;
 
+	/* Dark letter/pillarbox bars behind the phone frame. */
+	vec4 clear_color;
+	vec4_set(&clear_color, 0.08f, 0.08f, 0.09f, 1.0f);
+	gs_clear(GS_CLEAR_COLOR, &clear_color, 0.0f, 0);
+
 	gs_viewport_push();
 	gs_projection_push();
 
 	const bool previous = gs_set_linear_srgb(true);
+	/* Ortho matches vertical canvas base (1080x1920), not main 1920x1080. */
 	gs_ortho(0.0f, float(self->world_cx_), 0.0f, float(self->world_cy_), -100.0f, 100.0f);
 	gs_set_viewport(self->preview_x_, self->preview_y_, newCX, newCY);
 
@@ -332,6 +351,40 @@ void MsrPreviewDisplay::draw_preview(void *param, uint32_t cx, uint32_t cy)
 	self->draw_selection_overlay();
 
 	gs_set_linear_srgb(previous);
+	gs_projection_pop();
+	gs_viewport_pop();
+
+	/* Thin border around the portrait phone area. */
+	gs_viewport_push();
+	gs_projection_push();
+	gs_ortho(0.0f, float(cx), 0.0f, float(cy), -100.0f, 100.0f);
+	gs_set_viewport(0, 0, (int)cx, (int)cy);
+
+	gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
+	gs_eparam_t *color = gs_effect_get_param_by_name(solid, "color");
+	vec4 border;
+	vec4_set(&border, 0.78f, 0.78f, 0.84f, 1.0f);
+	gs_effect_set_vec4(color, &border);
+
+	const float x0 = float(self->preview_x_);
+	const float y0 = float(self->preview_y_);
+	const float x1 = float(self->preview_x_ + newCX);
+	const float y1 = float(self->preview_y_ + newCY);
+
+	gs_render_start(true);
+	gs_vertex2f(x0, y0);
+	gs_vertex2f(x1, y0);
+	gs_vertex2f(x1, y1);
+	gs_vertex2f(x0, y1);
+	gs_vertex2f(x0, y0);
+	gs_vertbuffer_t *border_buf = gs_render_save();
+	while (gs_effect_loop(solid, "Solid")) {
+		gs_load_vertexbuffer(border_buf);
+		gs_draw(GS_LINESTRIP, 0, 0);
+	}
+	gs_vertexbuffer_destroy(border_buf);
+	gs_load_vertexbuffer(nullptr);
+
 	gs_projection_pop();
 	gs_viewport_pop();
 
@@ -747,6 +800,11 @@ MsrPreviewDock::MsrPreviewDock(QWidget *parent) : QWidget(parent)
 
 void MsrPreviewDock::build_ui()
 {
+	/* Tall, narrow dock so the phone preview reads as 9:16 by default. */
+	setMinimumSize(200, 420);
+	resize(280, 720);
+	setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+
 	auto *root = new QVBoxLayout(this);
 	root->setContentsMargins(6, 6, 6, 6);
 	root->setSpacing(6);
@@ -761,7 +819,8 @@ void MsrPreviewDock::build_ui()
 	connect(refresh, &QPushButton::clicked, this, &MsrPreviewDock::refresh_all);
 
 	display_ = new MsrPreviewDisplay(this);
-	root->addWidget(display_, 1);
+	display_->setMinimumSize(150, 280);
+	root->addWidget(display_, 5);
 
 	hint_label_ = new QLabel(QString::fromUtf8(obs_module_text("VerticalPreviewHint")), this);
 	hint_label_->setWordWrap(true);
@@ -801,10 +860,14 @@ void MsrPreviewDock::ensure_canvas()
 	int w = 1080, h = 1920;
 	if (auto *c = MsrController::instance()) {
 		auto s = c->settings();
-		w = s.vertical_width;
-		h = s.vertical_height;
+		if (s.vertical_width > 1 && s.vertical_height > 1 && s.vertical_width < s.vertical_height) {
+			w = s.vertical_width;
+			h = s.vertical_height;
+		}
 	}
 	vc->ensure((uint32_t)w, (uint32_t)h);
+	if (vc->width() >= vc->height() || vc->width() == 0 || vc->height() == 0)
+		vc->ensure(1080, 1920);
 	vc->follow_main_scene();
 }
 
