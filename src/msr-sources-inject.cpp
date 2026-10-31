@@ -6,6 +6,8 @@ Copyright (C) 2026 Travvvman
 #include "msr-vertical-canvas.hpp"
 #include "plugin-support.h"
 
+#include <obs-module.h>
+
 #include <QMainWindow>
 #include <QDockWidget>
 #include <QListView>
