@@ -157,15 +157,24 @@ static void get_cropped_source_size(obs_sceneitem_t *item, float &cx, float &cy)
  */
 static void get_selection_box_transform(obs_sceneitem_t *item, matrix4 *out)
 {
-	/* Always the visible content quad — never bare box_transform.
-	 * For SCALE_INNER/OUTER letterboxing, box_transform is the full bounds
-	 * (e.g. 1080×1920) while draw×crop tightly wraps the fitted pixels.
-	 * Outline, handles, hit-test, and stretch_start_size_ all use this. */
+	/* Unit square → visible content quad (draw_transform × cropped size).
+	 * Do NOT use matrix4_scale3f(draw, cx, cy): OBS's matrix4_mul(m, S)
+	 * scales translation (ty*cy), so letterboxed cams land at absurd Y
+	 * (e.g. 656→708480). Scale draw's X/Y basis only; leave t alone.
+	 * Never use bare box_transform — that is the full bounds rect. */
 	float cx, cy;
 	get_cropped_source_size(item, cx, cy);
 	matrix4 draw;
 	obs_sceneitem_get_draw_transform(item, &draw);
-	matrix4_scale3f(out, &draw, cx, cy, 1.0f);
+	matrix4_copy(out, &draw);
+	out->x.x *= cx;
+	out->x.y *= cx;
+	out->x.z *= cx;
+	out->x.w *= cx;
+	out->y.x *= cy;
+	out->y.y *= cy;
+	out->y.z *= cy;
+	out->y.w *= cy;
 }
 
 /* World-space size of the visible content (tight box). */
@@ -548,18 +557,21 @@ bool MsrPreviewDisplay::draw_selected_cb(obs_scene_t *, obs_sceneitem_t *item, v
 	if (!obs_sceneitem_selected(item) || !obs_sceneitem_visible(item))
 		return true;
 
-	/* Unit-square under content selection transform (draw × cropped size). */
-	matrix4 sel;
-	get_selection_box_transform(item, &sel);
+	/* Source-pixel space under draw_transform — same mapping OBS uses to
+	 * place the item (tight content box; not full bounds). */
+	float cx, cy;
+	get_cropped_source_size(item, cx, cy);
+	matrix4 draw;
+	obs_sceneitem_get_draw_transform(item, &draw);
 
 	gs_matrix_push();
-	gs_matrix_mul(&sel);
+	gs_matrix_mul(&draw);
 
 	gs_render_start(true);
 	gs_vertex2f(0.0f, 0.0f);
-	gs_vertex2f(0.0f, 1.0f);
-	gs_vertex2f(1.0f, 1.0f);
-	gs_vertex2f(1.0f, 0.0f);
+	gs_vertex2f(0.0f, cy);
+	gs_vertex2f(cx, cy);
+	gs_vertex2f(cx, 0.0f);
 	gs_vertex2f(0.0f, 0.0f);
 	gs_vertbuffer_t *box = gs_render_save();
 
@@ -580,16 +592,17 @@ bool MsrPreviewDisplay::draw_selected_cb(obs_scene_t *, obs_sceneitem_t *item, v
 	const float dpr = self ? float(self->devicePixelRatioF()) : 1.0f;
 	const float ps = (self && self->preview_scale_ > 0.001f) ? self->preview_scale_ : 1.0f;
 	const float half_world = HANDLE_RADIUS * (dpr > 0.001f ? dpr : 1.0f) / ps;
-	float hx = half_world / (fabsf(content.x) > 1.0f ? fabsf(content.x) : 1.0f);
-	float hy = half_world / (fabsf(content.y) > 1.0f ? fabsf(content.y) : 1.0f);
-	if (hx < 0.004f)
-		hx = 0.004f;
-	if (hy < 0.004f)
-		hy = 0.004f;
-	if (hx > 0.12f)
-		hx = 0.12f;
-	if (hy > 0.12f)
-		hy = 0.12f;
+	/* Handles are in source-pixel space (same matrix as outline). */
+	float hx = half_world / (fabsf(content.x) > 1.0f ? fabsf(content.x) : 1.0f) * cx;
+	float hy = half_world / (fabsf(content.y) > 1.0f ? fabsf(content.y) : 1.0f) * cy;
+	if (hx < 1.0f)
+		hx = 1.0f;
+	if (hy < 1.0f)
+		hy = 1.0f;
+	if (hx > cx * 0.12f)
+		hx = cx * 0.12f;
+	if (hy > cy * 0.12f)
+		hy = cy * 0.12f;
 	auto draw_handle = [&](float px, float py) {
 		gs_render_start(true);
 		gs_vertex2f(px - hx, py - hy);
@@ -607,13 +620,13 @@ bool MsrPreviewDisplay::draw_selected_cb(obs_scene_t *, obs_sceneitem_t *item, v
 		gs_vertexbuffer_destroy(hbuf);
 	};
 	draw_handle(0.0f, 0.0f);
-	draw_handle(0.5f, 0.0f);
-	draw_handle(1.0f, 0.0f);
-	draw_handle(0.0f, 0.5f);
-	draw_handle(1.0f, 0.5f);
-	draw_handle(0.0f, 1.0f);
-	draw_handle(0.5f, 1.0f);
-	draw_handle(1.0f, 1.0f);
+	draw_handle(cx * 0.5f, 0.0f);
+	draw_handle(cx, 0.0f);
+	draw_handle(0.0f, cy * 0.5f);
+	draw_handle(cx, cy * 0.5f);
+	draw_handle(0.0f, cy);
+	draw_handle(cx * 0.5f, cy);
+	draw_handle(cx, cy);
 
 	gs_vertexbuffer_destroy(box);
 	gs_matrix_pop();
