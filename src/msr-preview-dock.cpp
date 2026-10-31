@@ -22,7 +22,6 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QListWidgetItem>
 #include <QPushButton>
 #include <QLabel>
-#include <QCheckBox>
 #include <QDoubleSpinBox>
 #include <QSpinBox>
 #include <QEvent>
@@ -85,7 +84,6 @@ namespace {
 constexpr float HANDLE_RADIUS = 7.0f;       /* half-size in logical screen px (drawn larger) */
 constexpr float HANDLE_SEL_RADIUS = 18.0f;  /* hit radius in logical screen px */
 constexpr float DRAG_THRESHOLD = 5.0f;
-constexpr float SNAP_DISTANCE = 12.0f;
 
 inline QSize pixel_size(QWidget *w)
 {
@@ -791,39 +789,6 @@ void MsrPreviewDisplay::clamp_aspect(vec3 &tl, vec3 &br, vec2 &size, const vec2 
 		br.y = tl.y + size.y;
 }
 
-vec3 MsrPreviewDisplay::snap_offset(const vec3 &tl, const vec3 &br) const
-{
-	vec3 clampOffset;
-	vec3_zero(&clampOffset);
-	if (!snap_enabled_)
-		return clampOffset;
-
-	const float dprSnap = float(devicePixelRatioF());
-	const float clampDist = SNAP_DISTANCE * (dprSnap > 0.001f ? dprSnap : 1.0f) /
-				(preview_scale_ > 0.001f ? preview_scale_ : 1.0f);
-	const float screenW = float(world_cx_);
-	const float screenH = float(world_cy_);
-	const float centerX = br.x - (br.x - tl.x) / 2.0f;
-	const float centerY = br.y - (br.y - tl.y) / 2.0f;
-
-	auto edge = [&](float moveAxis, float checkAxis, float &offset) {
-		const float dist = fabsf(checkAxis - moveAxis);
-		if (dist < clampDist && fabsf(offset) < 0.001f)
-			offset = checkAxis - moveAxis;
-	};
-
-	edge(tl.x, 0.0f, clampOffset.x);
-	edge(br.x, screenW, clampOffset.x);
-	edge(tl.y, 0.0f, clampOffset.y);
-	edge(br.y, screenH, clampOffset.y);
-
-	if (fabsf(screenW / 2.0f - centerX) < clampDist && fabsf(clampOffset.x) < 0.001f)
-		clampOffset.x = screenW / 2.0f - centerX;
-	if (fabsf(screenH / 2.0f - centerY) < clampDist && fabsf(clampOffset.y) < 0.001f)
-		clampOffset.y = screenH / 2.0f - centerY;
-
-	return clampOffset;
-}
 
 void MsrPreviewDisplay::update_hover_cursor(const vec2 &world)
 {
@@ -871,27 +836,6 @@ void MsrPreviewDisplay::move_selected(const vec2 &pos)
 	vec2 offset, moveOffset;
 	vec2_sub(&offset, &pos, &start_pos_);
 	vec2_sub(&moveOffset, &offset, &last_move_offset_);
-
-	/*
-	 * Snap never changes drag mode (mode is fixed at press). Only nudges the
-	 * translation. Skip a snap axis that fights the user's drag — otherwise a
-	 * flush full-canvas item is glued to the edges and feels unmovable.
-	 */
-	if (!(QGuiApplication::keyboardModifiers() & Qt::ControlModifier) && snap_enabled_) {
-		vec2 size = get_item_size(stretch_item_);
-		vec2 cur;
-		obs_sceneitem_get_pos(stretch_item_, &cur);
-		vec3 tl, br;
-		vec3_set(&tl, cur.x + moveOffset.x, cur.y + moveOffset.y, 0.0f);
-		vec3_set(&br, tl.x + size.x, tl.y + size.y, 0.0f);
-		vec3 snap = snap_offset(tl, br);
-		if (snap.x * moveOffset.x < 0.0f)
-			snap.x = 0.0f;
-		if (snap.y * moveOffset.y < 0.0f)
-			snap.y = 0.0f;
-		moveOffset.x += snap.x;
-		moveOffset.y += snap.y;
-	}
 
 	vec2_add(&last_move_offset_, &last_move_offset_, &moveOffset);
 
@@ -960,7 +904,6 @@ void MsrPreviewDisplay::stretch_selected(const vec2 &pos)
 	if (size.y < 2.0f)
 		size.y = 2.0f;
 
-	/* Snap is move-only — never applied during resize (would glue flush corners). */
 	obs_sceneitem_defer_update_begin(stretch_item_);
 	/*
 	 * Bounds-aware resize:
@@ -1419,14 +1362,6 @@ void MsrPreviewDock::build_ui()
 	hint_label_->setWordWrap(true);
 	root->addWidget(hint_label_);
 
-	snap_check_ = new QCheckBox(QString::fromUtf8(obs_module_text("VerticalSnap")), this);
-	/* Off by default: flush full-canvas sources (e.g. Fit) otherwise fight every move. */
-	snap_check_->setChecked(false);
-	root->addWidget(snap_check_);
-	connect(snap_check_, &QCheckBox::toggled, this, &MsrPreviewDock::on_snap_toggled);
-	if (display_)
-		display_->set_snap_enabled(false);
-
 	auto *size_row = new QHBoxLayout();
 	size_row->addWidget(new QLabel(QString::fromUtf8(obs_module_text("VerticalSizeW")), this));
 	size_w_spin_ = new QDoubleSpinBox(this);
@@ -1633,11 +1568,6 @@ void MsrPreviewDock::on_preview_selection_changed(const QString &name)
 
 void MsrPreviewDock::on_audio_button_clicked() {}
 
-void MsrPreviewDock::on_snap_toggled(bool checked)
-{
-	if (display_)
-		display_->set_snap_enabled(checked);
-}
 
 void MsrPreviewDock::on_move_up()
 {

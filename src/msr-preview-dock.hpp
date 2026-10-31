@@ -21,7 +21,6 @@ the Free Software Foundation; either version 2 of the License, or
 class QLabel;
 class QListWidget;
 class QListWidgetItem;
-class QCheckBox;
 class QDoubleSpinBox;
 class QPushButton;
 class QShowEvent;
@@ -58,9 +57,6 @@ public:
 	~MsrPreviewDisplay() override;
 
 	void refresh_display();
-	void set_snap_enabled(bool enabled) { snap_enabled_ = enabled; }
-	bool snap_enabled() const { return snap_enabled_; }
-
 	/** Visible content / bounds size of the list-selected item (canvas px). */
 	bool selected_size(float &w, float &h) const;
 	/** Set size of the selected item (aspect kept unless free_stretch). */
@@ -106,7 +102,6 @@ private:
 	void stretch_selected(const vec2 &pos);
 	void crop_selected(const vec2 &pos);
 	void clamp_aspect(vec3 &tl, vec3 &br, vec2 &size, const vec2 &base_size) const;
-	vec3 snap_offset(const vec3 &tl, const vec3 &br) const;
 	void update_hover_cursor(const vec2 &world);
 	static bool draw_selected_cb(obs_scene_t *scene, obs_sceneitem_t *item, void *param);
 
@@ -128,7 +123,6 @@ private:
 	bool mouse_moved_ = false;
 	bool mouse_over_items_ = false;
 	bool cropping_ = false;
-	bool snap_enabled_ = true;
 	vec2 start_pos_{};
 	vec2 last_pos_{};
 	vec2 last_move_offset_{};
@@ -185,7 +179,6 @@ private slots:
 	void on_list_item_clicked(QListWidgetItem *item);
 	void on_preview_selection_changed(const QString &name);
 	void on_audio_button_clicked();
-	void on_snap_toggled(bool checked);
 	void rebuild_source_list();
 
 private:
@@ -198,7 +191,6 @@ private:
 	QLabel *follow_label_ = nullptr;
 	QListWidget *source_list_ = nullptr;
 	QLabel *hint_label_ = nullptr;
-	QCheckBox *snap_check_ = nullptr;
 	QDoubleSpinBox *size_w_spin_ = nullptr;
 	QDoubleSpinBox *size_h_spin_ = nullptr;
 	QPushButton *scale_minus_btn_ = nullptr;
