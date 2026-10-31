@@ -150,75 +150,24 @@ static void get_cropped_source_size(obs_sceneitem_t *item, float &cx, float &cy)
 
 /*
  * Transform mapping the unit square (0,0)-(1,1) onto the *visible source content*.
- * Starts from obs_sceneitem_get_box_transform (OBS selection box). For letterboxing
- * bounds types (SCALE_INNER/OUTER/…), inset to the fitted image inside the bounds
- * using bounds alignment — so "sony" wraps the cam, not the full 1080×1920 canvas.
+ * Uses draw_transform × cropped source size — the same mapping OBS uses to place
+ * the source pixels (honors crop, SCALE_INNER/OUTER fit, rotation, and scale).
+ * Do NOT use bare box_transform for letterboxed bounds: that is the full 1080×1920
+ * bounds rect, not the fitted cam.
  */
 static void get_selection_box_transform(obs_sceneitem_t *item, matrix4 *out)
 {
-	matrix4 box;
-	obs_sceneitem_get_box_transform(item, &box);
+	float cx, cy;
+	get_cropped_source_size(item, cx, cy);
 
-	const obs_bounds_type bt = obs_sceneitem_get_bounds_type(item);
-	if (bt == OBS_BOUNDS_NONE || bt == OBS_BOUNDS_STRETCH) {
-		matrix4_copy(out, &box);
-		return;
-	}
+	matrix4 draw;
+	obs_sceneitem_get_draw_transform(item, &draw);
 
-	float src_w, src_h;
-	get_cropped_source_size(item, src_w, src_h);
-
-	vec2 bounds;
-	obs_sceneitem_get_bounds(item, &bounds);
-	if (bounds.x < 1.0f || bounds.y < 1.0f) {
-		matrix4_copy(out, &box);
-		return;
-	}
-
-	float sx = bounds.x / src_w;
-	float sy = bounds.y / src_h;
-	float s;
-	if (bt == OBS_BOUNDS_SCALE_INNER || bt == OBS_BOUNDS_MAX_ONLY) {
-		s = (sx < sy) ? sx : sy;
-		if (bt == OBS_BOUNDS_MAX_ONLY && s > 1.0f)
-			s = 1.0f;
-	} else if (bt == OBS_BOUNDS_SCALE_OUTER) {
-		s = (sx > sy) ? sx : sy;
-	} else if (bt == OBS_BOUNDS_SCALE_TO_WIDTH) {
-		s = sx;
-	} else { /* SCALE_TO_HEIGHT */
-		s = sy;
-	}
-
-	const float cw = src_w * s;
-	const float ch = src_h * s;
-	float uw = cw / bounds.x;
-	float vh = ch / bounds.y;
-	if (uw > 1.0f)
-		uw = 1.0f;
-	if (vh > 1.0f)
-		vh = 1.0f;
-
-	const uint32_t ba = obs_sceneitem_get_bounds_alignment(item);
-	float u0 = 0.0f;
-	float v0 = 0.0f;
-	if (ba & OBS_ALIGN_RIGHT)
-		u0 = 1.0f - uw;
-	else if (!(ba & OBS_ALIGN_LEFT))
-		u0 = (1.0f - uw) * 0.5f;
-	if (ba & OBS_ALIGN_BOTTOM)
-		v0 = 1.0f - vh;
-	else if (!(ba & OBS_ALIGN_TOP))
-		v0 = (1.0f - vh) * 0.5f;
-
-	/* unit → content sub-rect of bounds box: out = box * T(u0,v0) * S(uw,vh) */
-	matrix4 scale_m, trans_m, local;
+	/* out = draw * S(cx, cy)  so  out*(u,v) = draw*(u*cx, v*cy) */
+	matrix4 scale_m;
 	matrix4_identity(&scale_m);
-	matrix4_scale3f(&scale_m, &scale_m, uw, vh, 1.0f);
-	matrix4_identity(&trans_m);
-	matrix4_translate3f(&trans_m, &trans_m, u0, v0, 0.0f);
-	matrix4_mul(&local, &trans_m, &scale_m);
-	matrix4_mul(out, &box, &local);
+	matrix4_scale3f(&scale_m, &scale_m, cx, cy, 1.0f);
+	matrix4_mul(out, &draw, &scale_m);
 }
 
 /* World-space size of the visible content (tight box). */

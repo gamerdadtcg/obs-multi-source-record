@@ -1380,6 +1380,10 @@ void MsrController::ws_vertical_status(obs_data_t *request_data, obs_data_t *res
 			obs_data_set_double(row, "bounds_x", bounds.x);
 			obs_data_set_double(row, "bounds_y", bounds.y);
 			obs_data_set_int(row, "bounds_type", (int)obs_sceneitem_get_bounds_type(item));
+			obs_data_set_int(row, "bounds_align", (int)obs_sceneitem_get_bounds_alignment(item));
+			obs_data_set_bool(row, "selected", obs_sceneitem_selected(item));
+			obs_data_set_int(row, "source_width", (int)obs_source_get_width(src));
+			obs_data_set_int(row, "source_height", (int)obs_source_get_height(src));
 			obs_data_array_push_back(arr, row);
 			obs_data_release(row);
 			return true;
@@ -1414,6 +1418,24 @@ void MsrController::ws_vertical_set_item(obs_data_t *request_data, obs_data_t *r
 	obs_data_set_bool(response_data, "audio_enabled", vc->item_audio_enabled(name));
 }
 
+
+void MsrController::ws_vertical_select(obs_data_t *request_data, obs_data_t *response_data, void *priv)
+{
+	UNUSED_PARAMETER(priv);
+	obs_data_set_bool(response_data, "success", false);
+	const char *name = request_data ? obs_data_get_string(request_data, "source_name") : nullptr;
+	if (!name || !*name)
+		return;
+	auto *vc = MsrVerticalCanvas::instance();
+	if (!vc)
+		return;
+	const bool exclusive = !request_data || !obs_data_has_user_value(request_data, "exclusive") ||
+			       obs_data_get_bool(request_data, "exclusive");
+	const bool ok = vc->select_source(name, exclusive);
+	obs_data_set_bool(response_data, "success", ok);
+	obs_data_set_string(response_data, "source_name", name);
+}
+
 void MsrController::register_websocket()
 {
 	ws_vendor_ = obs_websocket_register_vendor("obs-multi-source-record");
@@ -1440,5 +1462,6 @@ void MsrController::register_websocket()
 	obs_websocket_vendor_register_request(ws_vendor_, "vertical_add_source", ws_vertical_add_source, this);
 	obs_websocket_vendor_register_request(ws_vendor_, "vertical_status", ws_vertical_status, this);
 	obs_websocket_vendor_register_request(ws_vendor_, "vertical_set_item", ws_vertical_set_item, this);
+	obs_websocket_vendor_register_request(ws_vendor_, "vertical_select", ws_vertical_select, this);
 	obs_log(LOG_INFO, "registered obs-websocket vendor obs-multi-source-record");
 }
