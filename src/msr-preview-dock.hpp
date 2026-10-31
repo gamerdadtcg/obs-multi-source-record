@@ -124,7 +124,6 @@ protected:
 	void resizeEvent(QResizeEvent *event) override;
 
 private:
-	MsrPhoneFrame *phone_frame_ = nullptr;
 	MsrPreviewDisplay *display_ = nullptr;
 };
 
@@ -160,6 +159,7 @@ private:
 	void ensure_canvas();
 	QString selected_source_name() const;
 
+	MsrPhoneFrame *phone_frame_ = nullptr;
 	MsrPreviewDisplay *display_ = nullptr;
 	QLabel *follow_label_ = nullptr;
 	QListWidget *source_list_ = nullptr;
