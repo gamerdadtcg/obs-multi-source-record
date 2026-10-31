@@ -169,6 +169,48 @@ MsrPreviewDisplay::~MsrPreviewDisplay()
 	destroy_display();
 }
 
+int MsrPreviewDisplay::heightForWidth(int w) const
+{
+	if (w < 1)
+		w = 1;
+	return int(float(w) * 16.0f / 9.0f + 0.5f);
+}
+
+MsrPhoneFrame::MsrPhoneFrame(QWidget *parent) : QWidget(parent)
+{
+	setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+	setMinimumSize(150, 280);
+	/* Dark letter/pillarbox host around the centered phone rect. */
+	setStyleSheet("background-color: #141416;");
+	display_ = new MsrPreviewDisplay(this);
+	display_->setStyleSheet("border: 1px solid #c8c8d6;");
+}
+
+void MsrPhoneFrame::resizeEvent(QResizeEvent *event)
+{
+	QWidget::resizeEvent(event);
+	if (!display_)
+		return;
+	const int W = width();
+	const int H = height();
+	if (W < 2 || H < 2)
+		return;
+	/* Largest centered 9:16 phone rect inside the dock area. */
+	int ph = H;
+	int pw = int(float(ph) * 9.0f / 16.0f + 0.5f);
+	if (pw > W) {
+		pw = W;
+		ph = int(float(pw) * 16.0f / 9.0f + 0.5f);
+	}
+	if (pw < 2)
+		pw = 2;
+	if (ph < 2)
+		ph = 2;
+	const int x = (W - pw) / 2;
+	const int y = (H - ph) / 2;
+	display_->setGeometry(x, y, pw, ph);
+}
+
 void MsrPreviewDisplay::ensure_canvas()
 {
 	auto *vc = MsrVerticalCanvas::instance();
@@ -818,9 +860,9 @@ void MsrPreviewDock::build_ui()
 	root->addLayout(scene_row);
 	connect(refresh, &QPushButton::clicked, this, &MsrPreviewDock::refresh_all);
 
-	display_ = new MsrPreviewDisplay(this);
-	display_->setMinimumSize(150, 280);
-	root->addWidget(display_, 5);
+	phone_frame_ = new MsrPhoneFrame(this);
+	display_ = phone_frame_->display();
+	root->addWidget(phone_frame_, 5);
 
 	hint_label_ = new QLabel(QString::fromUtf8(obs_module_text("VerticalPreviewHint")), this);
 	hint_label_->setWordWrap(true);

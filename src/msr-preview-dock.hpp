@@ -54,6 +54,10 @@ public:
 
 	void refresh_display();
 
+	QSize sizeHint() const override { return QSize(270, 480); }
+	bool hasHeightForWidth() const override { return true; }
+	int heightForWidth(int w) const override;
+
 protected:
 	void showEvent(QShowEvent *event) override;
 	void hideEvent(QHideEvent *event) override;
@@ -106,6 +110,22 @@ private:
 	obs_sceneitem_t *stretch_item_ = nullptr; /* non-owning while mouse down */
 	matrix4 item_to_screen_{};
 	matrix4 screen_to_item_{};
+};
+
+
+/** Host that keeps the native preview widget sized to a centered 9:16 phone rect. */
+class MsrPhoneFrame : public QWidget {
+	Q_OBJECT
+public:
+	explicit MsrPhoneFrame(QWidget *parent = nullptr);
+	MsrPreviewDisplay *display() const { return display_; }
+
+protected:
+	void resizeEvent(QResizeEvent *event) override;
+
+private:
+	MsrPhoneFrame *phone_frame_ = nullptr;
+	MsrPreviewDisplay *display_ = nullptr;
 };
 
 /**
