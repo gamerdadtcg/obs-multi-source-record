@@ -23,6 +23,8 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QPushButton>
 #include <QLabel>
 #include <QCheckBox>
+#include <QDoubleSpinBox>
+#include <QSpinBox>
 #include <QEvent>
 #include <QTimer>
 #include <QShowEvent>
@@ -81,7 +83,7 @@ bool msr_selected_handle_cb(obs_scene_t *, obs_sceneitem_t *it, void *p)
 namespace {
 
 constexpr float HANDLE_RADIUS = 7.0f;       /* half-size in logical screen px (drawn larger) */
-constexpr float HANDLE_SEL_RADIUS = 12.0f;  /* hit radius in logical screen px */
+constexpr float HANDLE_SEL_RADIUS = 18.0f;  /* hit radius in logical screen px */
 constexpr float DRAG_THRESHOLD = 5.0f;
 constexpr float SNAP_DISTANCE = 12.0f;
 
@@ -157,11 +159,17 @@ static void get_cropped_source_size(obs_sceneitem_t *item, float &cx, float &cy)
  */
 static void get_selection_box_transform(obs_sceneitem_t *item, matrix4 *out)
 {
+	/*
+	 * Bounds items: use OBS box_transform (unit square → bounds rect). Matches
+	 * main-preview handle hit-testing and puts handles on the bounds corners the
+	 * user expects. BOUNDS_NONE: draw_transform × cropped size → content quad.
+	 */
+	if (obs_sceneitem_get_bounds_type(item) != OBS_BOUNDS_NONE) {
+		obs_sceneitem_get_box_transform(item, out);
+		return;
+	}
 	float cx, cy;
 	get_cropped_source_size(item, cx, cy);
-
-	/* Same composition OBS uses when building transforms: out = draw * S(cx,cy).
-	 * Unit square then maps onto the visible source quad (crop + bounds fit + rot). */
 	matrix4 draw;
 	obs_sceneitem_get_draw_transform(item, &draw);
 	matrix4_scale3f(out, &draw, cx, cy, 1.0f);
@@ -475,6 +483,8 @@ void MsrPreviewDisplay::draw_preview(void *param, uint32_t cx, uint32_t cy)
 	if (!program)
 		return;
 
+	self->last_draw_cx_ = cx;
+	self->last_draw_cy_ = cy;
 	self->update_preview_layout(cx, cy);
 	int newCX = (int)(self->preview_scale_ * float(self->world_cx_));
 	int newCY = (int)(self->preview_scale_ * float(self->world_cy_));
@@ -545,20 +555,18 @@ bool MsrPreviewDisplay::draw_selected_cb(obs_scene_t *, obs_sceneitem_t *item, v
 	if (!obs_sceneitem_selected(item) || !obs_sceneitem_visible(item))
 		return true;
 
-	/* Draw in source-pixel space under draw_transform — identical to how OBS places the item. */
-	float cx, cy;
-	get_cropped_source_size(item, cx, cy);
-	matrix4 draw;
-	obs_sceneitem_get_draw_transform(item, &draw);
+	/* Unit-square under selection transform (box for bounds, content otherwise). */
+	matrix4 sel;
+	get_selection_box_transform(item, &sel);
 
 	gs_matrix_push();
-	gs_matrix_mul(&draw);
+	gs_matrix_mul(&sel);
 
 	gs_render_start(true);
 	gs_vertex2f(0.0f, 0.0f);
-	gs_vertex2f(0.0f, cy);
-	gs_vertex2f(cx, cy);
-	gs_vertex2f(cx, 0.0f);
+	gs_vertex2f(0.0f, 1.0f);
+	gs_vertex2f(1.0f, 1.0f);
+	gs_vertex2f(1.0f, 0.0f);
 	gs_vertex2f(0.0f, 0.0f);
 	gs_vertbuffer_t *box = gs_render_save();
 
@@ -579,16 +587,16 @@ bool MsrPreviewDisplay::draw_selected_cb(obs_scene_t *, obs_sceneitem_t *item, v
 	const float dpr = self ? float(self->devicePixelRatioF()) : 1.0f;
 	const float ps = (self && self->preview_scale_ > 0.001f) ? self->preview_scale_ : 1.0f;
 	const float half_world = HANDLE_RADIUS * (dpr > 0.001f ? dpr : 1.0f) / ps;
-	float hx = half_world * (cx / (fabsf(content.x) > 1.0f ? fabsf(content.x) : 1.0f));
-	float hy = half_world * (cy / (fabsf(content.y) > 1.0f ? fabsf(content.y) : 1.0f));
-	if (hx < 1.0f)
-		hx = 1.0f;
-	if (hy < 1.0f)
-		hy = 1.0f;
-	if (hx > cx * 0.12f)
-		hx = cx * 0.12f;
-	if (hy > cy * 0.12f)
-		hy = cy * 0.12f;
+	float hx = half_world / (fabsf(content.x) > 1.0f ? fabsf(content.x) : 1.0f);
+	float hy = half_world / (fabsf(content.y) > 1.0f ? fabsf(content.y) : 1.0f);
+	if (hx < 0.004f)
+		hx = 0.004f;
+	if (hy < 0.004f)
+		hy = 0.004f;
+	if (hx > 0.12f)
+		hx = 0.12f;
+	if (hy > 0.12f)
+		hy = 0.12f;
 	auto draw_handle = [&](float px, float py) {
 		gs_render_start(true);
 		gs_vertex2f(px - hx, py - hy);
@@ -606,13 +614,13 @@ bool MsrPreviewDisplay::draw_selected_cb(obs_scene_t *, obs_sceneitem_t *item, v
 		gs_vertexbuffer_destroy(hbuf);
 	};
 	draw_handle(0.0f, 0.0f);
-	draw_handle(cx * 0.5f, 0.0f);
-	draw_handle(cx, 0.0f);
-	draw_handle(0.0f, cy * 0.5f);
-	draw_handle(cx, cy * 0.5f);
-	draw_handle(0.0f, cy);
-	draw_handle(cx * 0.5f, cy);
-	draw_handle(cx, cy);
+	draw_handle(0.5f, 0.0f);
+	draw_handle(1.0f, 0.0f);
+	draw_handle(0.0f, 0.5f);
+	draw_handle(1.0f, 0.5f);
+	draw_handle(0.0f, 1.0f);
+	draw_handle(0.5f, 1.0f);
+	draw_handle(1.0f, 1.0f);
 
 	gs_vertexbuffer_destroy(box);
 	gs_matrix_pop();
@@ -669,6 +677,7 @@ MsrItemHandle MsrPreviewDisplay::handle_at_pos(obs_sceneitem_t *item, const vec2
 		{0.5f, 1.0f, MsrItemHandle::BottomCenter}, {1.0f, 1.0f, MsrItemHandle::BottomRight},
 	};
 
+	/* Primary: world-space distance to corners (OBS FindHandleAtPos). */
 	MsrItemHandle best = MsrItemHandle::None;
 	float best_d = radius * radius;
 	for (const auto &pr : probes) {
@@ -683,6 +692,33 @@ MsrItemHandle MsrPreviewDisplay::handle_at_pos(obs_sceneitem_t *item, const vec2
 			best = pr.h;
 		}
 	}
+
+	/*
+	 * Fallback: unit-space proximity after inverting the selection transform.
+	 * Survives small absolute world offsets that still keep relative move working.
+	 */
+	if (best == MsrItemHandle::None) {
+		matrix4 inv;
+		if (matrix4_inv(&inv, &box)) {
+			vec3 pos3, tpos;
+			vec3_set(&pos3, pos.x, pos.y, 0.0f);
+			vec3_transform(&tpos, &pos3, &inv);
+			vec2 sz = get_item_size(item);
+			const float ru = radius / (fabsf(sz.x) > 1.0f ? fabsf(sz.x) : 1.0f);
+			const float rv = radius / (fabsf(sz.y) > 1.0f ? fabsf(sz.y) : 1.0f);
+			float best_u = 1.0e9f;
+			for (const auto &pr : probes) {
+				float du = tpos.x - pr.u;
+				float dv = tpos.y - pr.v;
+				/* Elliptical threshold in unit space. */
+				float d = (du * du) / (ru * ru + 1e-8f) + (dv * dv) / (rv * rv + 1e-8f);
+				if (d <= 1.0f && d < best_u) {
+					best_u = d;
+					best = pr.h;
+				}
+			}
+		}
+	}
 	return best;
 }
 
@@ -690,6 +726,7 @@ void MsrPreviewDisplay::prepare_stretch(obs_sceneitem_t *item, MsrItemHandle han
 {
 	stretch_item_ = item;
 	stretch_handle_ = handle;
+	stretch_bounds_type_ = item ? obs_sceneitem_get_bounds_type(item) : OBS_BOUNDS_NONE;
 	if (!item || handle == MsrItemHandle::None)
 		return;
 
@@ -916,18 +953,28 @@ void MsrPreviewDisplay::stretch_selected(const vec2 &pos)
 
 	obs_sceneitem_defer_update_begin(stretch_item_);
 	/*
-	 * Always leave bounds mode so the visible content box is what we resize.
-	 * Aspect (default): uniform scale (scale_x == scale_y), opposite corner fixed
-	 * via clamp_aspect + TOP|LEFT alignment at the new tl.
-	 * Shift: free STRETCH bounds sized to the dragged rect.
+	 * Bounds-aware resize:
+	 * - Shift: free STRETCH bounds sized to the dragged rect.
+	 * - Started with bounds (SCALE_INNER/etc.): keep a bounds type and set
+	 *   bounds size so letterboxed fit still works (do not drop to scale-only).
+	 * - Otherwise: BOUNDS_NONE + uniform scale (aspect).
 	 */
 	obs_sceneitem_set_bounds_alignment(stretch_item_, OBS_ALIGN_TOP | OBS_ALIGN_LEFT);
 	obs_sceneitem_set_alignment(stretch_item_, OBS_ALIGN_TOP | OBS_ALIGN_LEFT);
 	if (shiftDown) {
 		obs_sceneitem_set_bounds_type(stretch_item_, OBS_BOUNDS_STRETCH);
-		vec2 zero_scale;
-		vec2_set(&zero_scale, 1.0f, 1.0f);
-		obs_sceneitem_set_scale(stretch_item_, &zero_scale);
+		vec2 one;
+		vec2_set(&one, 1.0f, 1.0f);
+		obs_sceneitem_set_scale(stretch_item_, &one);
+		obs_sceneitem_set_bounds(stretch_item_, &size);
+	} else if (stretch_bounds_type_ != OBS_BOUNDS_NONE) {
+		obs_bounds_type keep = stretch_bounds_type_;
+		if (keep == OBS_BOUNDS_STRETCH)
+			keep = OBS_BOUNDS_SCALE_INNER;
+		obs_sceneitem_set_bounds_type(stretch_item_, keep);
+		vec2 one;
+		vec2_set(&one, 1.0f, 1.0f);
+		obs_sceneitem_set_scale(stretch_item_, &one);
 		obs_sceneitem_set_bounds(stretch_item_, &size);
 	} else {
 		vec2 scale;
@@ -1014,8 +1061,13 @@ void MsrPreviewDisplay::mousePressEvent(QMouseEvent *event)
 
 	setFocus(Qt::MouseFocusReason);
 
-	QSize ps = pixel_size(this);
-	update_preview_layout((uint32_t)ps.width(), (uint32_t)ps.height());
+	/* Prefer last draw layout so hit-test matches painted handle positions. */
+	if (last_draw_cx_ >= 2 && last_draw_cy_ >= 2)
+		update_preview_layout(last_draw_cx_, last_draw_cy_);
+	else {
+		QSize ps = pixel_size(this);
+		update_preview_layout((uint32_t)ps.width(), (uint32_t)ps.height());
+	}
 
 	vec2 world = get_mouse_event_pos(qt);
 	start_pos_ = world;
@@ -1036,19 +1088,41 @@ void MsrPreviewDisplay::mousePressEvent(QMouseEvent *event)
 	/*
 	 * Selection is locked to the dock source list. Preview clicks never
 	 * select, switch, or clear — they only drag/resize the current item.
+	 * Handle hit is checked FIRST so a corner/edge press never falls through
+	 * to move mode.
 	 */
 	obs_sceneitem_t *selected = first_selected_item(scene);
 	MsrItemHandle handle = MsrItemHandle::None;
 	if (selected && !obs_sceneitem_locked(selected)) {
+		/* Handle before move — priority over body drag. */
 		handle = handle_at_pos(selected, world);
 		stretch_item_ = selected;
 		mouse_over_items_ = true;
 		prepare_stretch(stretch_item_, handle);
 		update_hover_cursor(world);
+
+		matrix4 box;
+		get_selection_box_transform(selected, &box);
+		vec3 tl, br;
+		vec3_set(&tl, 0.0f, 0.0f, 0.0f);
+		vec3_set(&br, 1.0f, 1.0f, 0.0f);
+		vec3_transform(&tl, &tl, &box);
+		vec3_transform(&br, &br, &box);
+		const float dpr = float(devicePixelRatioF());
+		obs_log(LOG_INFO,
+			"msr-preview press qt=(%.1f,%.1f) dpr=%.2f draw=%ux%u "
+			"preview=(%d,%d,scale=%.4f) world=(%.1f,%.1f) "
+			"boxTL=(%.1f,%.1f) boxBR=(%.1f,%.1f) bounds=%d handle=%u mode=%s",
+			qt.x(), qt.y(), dpr, last_draw_cx_, last_draw_cy_, preview_x_, preview_y_,
+			preview_scale_, world.x, world.y, tl.x, tl.y, br.x, br.y,
+			(int)obs_sceneitem_get_bounds_type(selected), (unsigned)handle,
+			handle != MsrItemHandle::None ? (cropping_ ? "crop" : "resize") : "move");
 	} else {
 		stretch_item_ = nullptr;
 		stretch_handle_ = MsrItemHandle::None;
 		unsetCursor();
+		obs_log(LOG_INFO, "msr-preview press qt=(%.1f,%.1f) world=(%.1f,%.1f) no selection",
+			qt.x(), qt.y(), world.x, world.y);
 	}
 
 	obs_scene_release(scene);
@@ -1062,8 +1136,12 @@ void MsrPreviewDisplay::mouseMoveEvent(QMouseEvent *event)
 #else
 	const QPointF qt = event->localPos();
 #endif
-	QSize ps = pixel_size(this);
-	update_preview_layout((uint32_t)ps.width(), (uint32_t)ps.height());
+	if (last_draw_cx_ >= 2 && last_draw_cy_ >= 2)
+		update_preview_layout(last_draw_cx_, last_draw_cy_);
+	else {
+		QSize ps = pixel_size(this);
+		update_preview_layout((uint32_t)ps.width(), (uint32_t)ps.height());
+	}
 	vec2 world = get_mouse_event_pos(qt);
 
 	if (!mouse_down_) {
@@ -1080,6 +1158,8 @@ void MsrPreviewDisplay::mouseMoveEvent(QMouseEvent *event)
 			return;
 		}
 		mouse_moved_ = true;
+		obs_log(LOG_INFO, "msr-preview drag-start handle=%u world=(%.1f,%.1f)",
+			(unsigned)stretch_handle_, world.x, world.y);
 	}
 
 	if (stretch_handle_ != MsrItemHandle::None && stretch_item_) {
@@ -1098,11 +1178,22 @@ void MsrPreviewDisplay::mouseMoveEvent(QMouseEvent *event)
 void MsrPreviewDisplay::mouseReleaseEvent(QMouseEvent *event)
 {
 	if (event->button() == Qt::LeftButton) {
+		if (mouse_down_) {
+			float w = 0.0f, h = 0.0f;
+			if (stretch_item_) {
+				vec2 sz = get_item_size(stretch_item_);
+				w = sz.x;
+				h = sz.y;
+			}
+			obs_log(LOG_INFO, "msr-preview release handle=%u moved=%d size=%.1fx%.1f",
+				(unsigned)stretch_handle_, mouse_moved_ ? 1 : 0, w, h);
+		}
 		mouse_down_ = false;
 		mouse_moved_ = false;
 		mouse_over_items_ = false;
 		stretch_item_ = nullptr;
 		stretch_handle_ = MsrItemHandle::None;
+		stretch_bounds_type_ = OBS_BOUNDS_NONE;
 		cropping_ = false;
 		vec2_zero(&last_move_offset_);
 		unsetCursor();
@@ -1178,6 +1269,109 @@ void MsrPreviewDisplay::contextMenuEvent(QContextMenuEvent *event)
 	event->accept();
 }
 
+bool MsrPreviewDisplay::selected_size(float &w, float &h) const
+{
+	auto *vc = MsrVerticalCanvas::instance();
+	obs_scene_t *scene = vc ? vc->program_scene() : nullptr;
+	obs_sceneitem_t *item = scene ? first_selected_item(scene) : nullptr;
+	if (scene)
+		obs_scene_release(scene);
+	if (!item)
+		return false;
+	vec2 sz = get_item_size(item);
+	w = sz.x;
+	h = sz.y;
+	return true;
+}
+
+bool MsrPreviewDisplay::set_selected_size(float w, float h, bool free_stretch)
+{
+	if (w < 2.0f)
+		w = 2.0f;
+	if (h < 2.0f)
+		h = 2.0f;
+	auto *vc = MsrVerticalCanvas::instance();
+	obs_scene_t *scene = vc ? vc->program_scene() : nullptr;
+	obs_sceneitem_t *item = scene ? first_selected_item(scene) : nullptr;
+	if (scene)
+		obs_scene_release(scene);
+	if (!item || obs_sceneitem_locked(item))
+		return false;
+
+	obs_source_t *source = obs_sceneitem_get_source(item);
+	const uint32_t source_cx = obs_source_get_width(source);
+	const uint32_t source_cy = obs_source_get_height(source);
+	if (!source_cx || !source_cy)
+		return false;
+
+	obs_sceneitem_crop crop;
+	obs_sceneitem_get_crop(item, &crop);
+	vec2 baseSize;
+	vec2_set(&baseSize, float(source_cx) - float(crop.left + crop.right),
+		 float(source_cy) - float(crop.top + crop.bottom));
+	if (baseSize.x < 1.0f)
+		baseSize.x = 1.0f;
+	if (baseSize.y < 1.0f)
+		baseSize.y = 1.0f;
+
+	vec2 size;
+	vec2_set(&size, w, h);
+	if (!free_stretch) {
+		const float baseAspect = baseSize.x / baseSize.y;
+		const float aspect = size.x / size.y;
+		if (fabsf(aspect) < fabsf(baseAspect))
+			size.x = size.y * baseAspect;
+		else
+			size.y = size.x / baseAspect;
+	}
+	size.x = std::round(size.x);
+	size.y = std::round(size.y);
+
+	obs_bounds_type bt = obs_sceneitem_get_bounds_type(item);
+	obs_sceneitem_defer_update_begin(item);
+	obs_sceneitem_set_bounds_alignment(item, OBS_ALIGN_TOP | OBS_ALIGN_LEFT);
+	obs_sceneitem_set_alignment(item, OBS_ALIGN_TOP | OBS_ALIGN_LEFT);
+	if (free_stretch) {
+		obs_sceneitem_set_bounds_type(item, OBS_BOUNDS_STRETCH);
+		vec2 one;
+		vec2_set(&one, 1.0f, 1.0f);
+		obs_sceneitem_set_scale(item, &one);
+		obs_sceneitem_set_bounds(item, &size);
+	} else if (bt != OBS_BOUNDS_NONE) {
+		if (bt == OBS_BOUNDS_STRETCH)
+			bt = OBS_BOUNDS_SCALE_INNER;
+		obs_sceneitem_set_bounds_type(item, bt);
+		vec2 one;
+		vec2_set(&one, 1.0f, 1.0f);
+		obs_sceneitem_set_scale(item, &one);
+		obs_sceneitem_set_bounds(item, &size);
+	} else {
+		vec2 scale;
+		vec2_div(&scale, &size, &baseSize);
+		const float s = (fabsf(scale.x) + fabsf(scale.y)) * 0.5f;
+		scale.x = scale.y = (s < 0.0001f) ? 0.0001f : s;
+		obs_sceneitem_set_bounds_type(item, OBS_BOUNDS_NONE);
+		vec2 empty;
+		vec2_zero(&empty);
+		obs_sceneitem_set_bounds(item, &empty);
+		obs_sceneitem_set_scale(item, &scale);
+	}
+	obs_sceneitem_defer_update_end(item);
+	obs_log(LOG_INFO, "msr-preview set_size %.1fx%.1f free=%d bounds_in=%d", size.x, size.y,
+		free_stretch ? 1 : 0, (int)bt);
+	return true;
+}
+
+bool MsrPreviewDisplay::scale_selected(float factor)
+{
+	if (factor < 0.05f || factor > 20.0f)
+		return false;
+	float w = 0.0f, h = 0.0f;
+	if (!selected_size(w, h))
+		return false;
+	return set_selected_size(w * factor, h * factor, false);
+}
+
 /* ---- MsrPreviewDock ----------------------------------------------------- */
 
 MsrPreviewDock::MsrPreviewDock(QWidget *parent) : QWidget(parent)
@@ -1221,6 +1415,34 @@ void MsrPreviewDock::build_ui()
 	connect(snap_check_, &QCheckBox::toggled, this, &MsrPreviewDock::on_snap_toggled);
 	if (display_)
 		display_->set_snap_enabled(true);
+
+	auto *size_row = new QHBoxLayout();
+	size_row->addWidget(new QLabel(QString::fromUtf8(obs_module_text("VerticalSizeW")), this));
+	size_w_spin_ = new QDoubleSpinBox(this);
+	size_w_spin_->setRange(2.0, 8192.0);
+	size_w_spin_->setDecimals(0);
+	size_w_spin_->setSingleStep(10.0);
+	size_w_spin_->setMaximumWidth(90);
+	size_row->addWidget(size_w_spin_);
+	size_row->addWidget(new QLabel(QString::fromUtf8(obs_module_text("VerticalSizeH")), this));
+	size_h_spin_ = new QDoubleSpinBox(this);
+	size_h_spin_->setRange(2.0, 8192.0);
+	size_h_spin_->setDecimals(0);
+	size_h_spin_->setSingleStep(10.0);
+	size_h_spin_->setMaximumWidth(90);
+	size_row->addWidget(size_h_spin_);
+	scale_minus_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("VerticalScaleMinus")), this);
+	scale_plus_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("VerticalScalePlus")), this);
+	scale_minus_btn_->setMaximumWidth(36);
+	scale_plus_btn_->setMaximumWidth(36);
+	size_row->addWidget(scale_minus_btn_);
+	size_row->addWidget(scale_plus_btn_);
+	size_row->addStretch(1);
+	root->addLayout(size_row);
+	connect(size_w_spin_, &QDoubleSpinBox::editingFinished, this, &MsrPreviewDock::on_size_apply);
+	connect(size_h_spin_, &QDoubleSpinBox::editingFinished, this, &MsrPreviewDock::on_size_apply);
+	connect(scale_minus_btn_, &QPushButton::clicked, this, &MsrPreviewDock::on_scale_minus);
+	connect(scale_plus_btn_, &QPushButton::clicked, this, &MsrPreviewDock::on_scale_plus);
 
 	root->addWidget(new QLabel(QString::fromUtf8(obs_module_text("VerticalSources")), this));
 	source_list_ = new QListWidget(this);
@@ -1281,6 +1503,7 @@ void MsrPreviewDock::refresh_all()
 	rebuild_source_list();
 	if (display_)
 		display_->refresh_display();
+	refresh_size_controls();
 }
 
 void MsrPreviewDock::on_main_scene_changed()
@@ -1350,9 +1573,11 @@ void MsrPreviewDock::on_list_selection_changed()
 		return;
 	if (name.isEmpty()) {
 		vc->clear_selection();
+		refresh_size_controls();
 		return;
 	}
 	vc->select_source(name.toStdString(), true);
+	refresh_size_controls();
 }
 
 void MsrPreviewDock::on_list_item_clicked(QListWidgetItem *item)
@@ -1438,4 +1663,57 @@ void MsrPreviewDock::on_fit_selected()
 	vc->fit_source(name.toStdString());
 	if (display_)
 		display_->refresh_display();
+	refresh_size_controls();
+}
+
+void MsrPreviewDock::refresh_size_controls()
+{
+	if (!size_w_spin_ || !size_h_spin_)
+		return;
+	float w = 0.0f, h = 0.0f;
+	const bool ok = display_ && display_->selected_size(w, h);
+	updating_size_ui_ = true;
+	size_w_spin_->setEnabled(ok);
+	size_h_spin_->setEnabled(ok);
+	if (scale_minus_btn_)
+		scale_minus_btn_->setEnabled(ok);
+	if (scale_plus_btn_)
+		scale_plus_btn_->setEnabled(ok);
+	if (ok) {
+		size_w_spin_->setValue(w);
+		size_h_spin_->setValue(h);
+	}
+	updating_size_ui_ = false;
+}
+
+void MsrPreviewDock::on_size_apply()
+{
+	if (updating_size_ui_ || !display_ || !size_w_spin_ || !size_h_spin_)
+		return;
+	const float w = float(size_w_spin_->value());
+	const float h = float(size_h_spin_->value());
+	if (display_->set_selected_size(w, h, false)) {
+		display_->refresh_display();
+		refresh_size_controls();
+	}
+}
+
+void MsrPreviewDock::on_scale_minus()
+{
+	if (!display_)
+		return;
+	if (display_->scale_selected(1.0f / 1.05f)) {
+		display_->refresh_display();
+		refresh_size_controls();
+	}
+}
+
+void MsrPreviewDock::on_scale_plus()
+{
+	if (!display_)
+		return;
+	if (display_->scale_selected(1.05f)) {
+		display_->refresh_display();
+		refresh_size_controls();
+	}
 }

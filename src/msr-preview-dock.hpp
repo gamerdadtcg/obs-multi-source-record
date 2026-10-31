@@ -22,6 +22,8 @@ class QLabel;
 class QListWidget;
 class QListWidgetItem;
 class QCheckBox;
+class QDoubleSpinBox;
+class QPushButton;
 class QShowEvent;
 class QHideEvent;
 class QResizeEvent;
@@ -58,6 +60,13 @@ public:
 	void refresh_display();
 	void set_snap_enabled(bool enabled) { snap_enabled_ = enabled; }
 	bool snap_enabled() const { return snap_enabled_; }
+
+	/** Visible content / bounds size of the list-selected item (canvas px). */
+	bool selected_size(float &w, float &h) const;
+	/** Set size of the selected item (aspect kept unless free_stretch). */
+	bool set_selected_size(float w, float h, bool free_stretch = false);
+	/** Multiply selected item scale/bounds by factor (e.g. 1.05 / 0.95). */
+	bool scale_selected(float factor);
 
 	QSize sizeHint() const override { return QSize(270, 480); }
 	bool hasHeightForWidth() const override { return true; }
@@ -103,12 +112,17 @@ private:
 
 	obs_display_t *display_ = nullptr;
 
-	/* Letterbox mapping: world (canvas) <-> device pixels */
+	/* Letterbox mapping: world (canvas) <-> device pixels.
+	 * preview_* are written only from the draw callback so mouse hit-tests
+	 * use the same layout the handles were painted with. */
 	int preview_x_ = 0;
 	int preview_y_ = 0;
 	float preview_scale_ = 1.0f;
 	uint32_t world_cx_ = 1080;
 	uint32_t world_cy_ = 1920;
+	uint32_t last_draw_cx_ = 0;
+	uint32_t last_draw_cy_ = 0;
+	obs_bounds_type stretch_bounds_type_ = OBS_BOUNDS_NONE;
 
 	bool mouse_down_ = false;
 	bool mouse_moved_ = false;
@@ -163,6 +177,10 @@ private slots:
 	void on_move_up();
 	void on_move_down();
 	void on_fit_selected();
+	void on_size_apply();
+	void on_scale_minus();
+	void on_scale_plus();
+	void refresh_size_controls();
 	void on_list_selection_changed();
 	void on_list_item_clicked(QListWidgetItem *item);
 	void on_preview_selection_changed(const QString &name);
@@ -181,6 +199,11 @@ private:
 	QListWidget *source_list_ = nullptr;
 	QLabel *hint_label_ = nullptr;
 	QCheckBox *snap_check_ = nullptr;
+	QDoubleSpinBox *size_w_spin_ = nullptr;
+	QDoubleSpinBox *size_h_spin_ = nullptr;
+	QPushButton *scale_minus_btn_ = nullptr;
+	QPushButton *scale_plus_btn_ = nullptr;
 	bool updating_ui_ = false;
 	bool list_row_changed_ = false;
+	bool updating_size_ui_ = false;
 };
