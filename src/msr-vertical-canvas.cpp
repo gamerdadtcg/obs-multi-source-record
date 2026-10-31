@@ -41,6 +41,7 @@ void MsrVerticalCanvas::destroy()
 MsrVerticalCanvas::~MsrVerticalCanvas()
 {
 	detach_main_signals();
+	audio_mix_.shutdown();
 	std::lock_guard<std::mutex> lock(mutex_);
 	if (canvas_) {
 		/* Leave the canvas in OBS so Travis keeps his vertical scenes. */
@@ -479,6 +480,7 @@ bool MsrVerticalCanvas::follow_main_scene()
 	attach_main_signals(main_src);
 	obs_log(LOG_INFO, "vertical canvas following main scene '%s'", name);
 	obs_source_release(main_src);
+	rebuild_audio_mix();
 	return true;
 }
 
@@ -558,4 +560,236 @@ bool MsrVerticalCanvas::reorder_source(const std::string &source_name, bool move
 	obs_sceneitem_set_order(item, move_up ? OBS_ORDER_MOVE_UP : OBS_ORDER_MOVE_DOWN);
 	obs_scene_release(scene);
 	return true;
+}
+
+bool MsrVerticalCanvas::stretch_source(const std::string &source_name)
+{
+	obs_scene_t *scene = program_scene();
+	if (!scene)
+		return false;
+	obs_sceneitem_t *item = find_item_by_name(scene, source_name);
+	if (!item) {
+		obs_scene_release(scene);
+		return false;
+	}
+	const uint32_t cw = width_ ? width_ : 1080;
+	const uint32_t ch = height_ ? height_ : 1920;
+	obs_sceneitem_set_bounds_type(item, OBS_BOUNDS_STRETCH);
+	obs_sceneitem_set_bounds_alignment(item, OBS_ALIGN_TOP | OBS_ALIGN_LEFT);
+	obs_sceneitem_set_alignment(item, OBS_ALIGN_TOP | OBS_ALIGN_LEFT);
+	vec2 bounds;
+	vec2_set(&bounds, (float)cw, (float)ch);
+	obs_sceneitem_set_bounds(item, &bounds);
+	vec2 pos;
+	vec2_set(&pos, 0.0f, 0.0f);
+	obs_sceneitem_set_pos(item, &pos);
+	obs_scene_release(scene);
+	return true;
+}
+
+bool MsrVerticalCanvas::center_source(const std::string &source_name)
+{
+	obs_scene_t *scene = program_scene();
+	if (!scene)
+		return false;
+	obs_sceneitem_t *item = find_item_by_name(scene, source_name);
+	if (!item) {
+		obs_scene_release(scene);
+		return false;
+	}
+	const uint32_t cw = width_ ? width_ : 1080;
+	const uint32_t ch = height_ ? height_ : 1920;
+	vec2 bounds;
+	obs_sceneitem_get_bounds(item, &bounds);
+	if (bounds.x < 1.0f || bounds.y < 1.0f) {
+		obs_source_t *src = obs_sceneitem_get_source(item);
+		vec2 scale;
+		obs_sceneitem_get_scale(item, &scale);
+		bounds.x = float(obs_source_get_width(src)) * scale.x;
+		bounds.y = float(obs_source_get_height(src)) * scale.y;
+	}
+	vec2 pos;
+	vec2_set(&pos, ((float)cw - bounds.x) * 0.5f, ((float)ch - bounds.y) * 0.5f);
+	obs_sceneitem_set_pos(item, &pos);
+	obs_scene_release(scene);
+	return true;
+}
+
+bool MsrVerticalCanvas::reset_source_transform(const std::string &source_name)
+{
+	return fit_source(source_name);
+}
+
+bool MsrVerticalCanvas::item_visible(const std::string &source_name)
+{
+	obs_scene_t *scene = program_scene();
+	if (!scene)
+		return false;
+	obs_sceneitem_t *item = find_item_by_name(scene, source_name);
+	if (!item) {
+		obs_scene_release(scene);
+		return false;
+	}
+	const bool vis = obs_sceneitem_visible(item);
+	obs_scene_release(scene);
+	return vis;
+}
+
+bool MsrVerticalCanvas::select_source(const std::string &source_name, bool exclusive)
+{
+	obs_scene_t *scene = program_scene();
+	if (!scene)
+		return false;
+	if (exclusive) {
+		obs_scene_enum_items(
+			scene,
+			[](obs_scene_t *, obs_sceneitem_t *it, void *) {
+				obs_sceneitem_select(it, false);
+				return true;
+			},
+			nullptr);
+	}
+	obs_sceneitem_t *item = find_item_by_name(scene, source_name);
+	if (!item) {
+		obs_scene_release(scene);
+		return false;
+	}
+	obs_sceneitem_select(item, true);
+	obs_scene_release(scene);
+	return true;
+}
+
+bool MsrVerticalCanvas::select_source_uuid(const std::string &uuid, bool exclusive)
+{
+	if (uuid.empty())
+		return false;
+	obs_scene_t *scene = program_scene();
+	if (!scene)
+		return false;
+	if (exclusive) {
+		obs_scene_enum_items(
+			scene,
+			[](obs_scene_t *, obs_sceneitem_t *it, void *) {
+				obs_sceneitem_select(it, false);
+				return true;
+			},
+			nullptr);
+	}
+	obs_sceneitem_t *item = find_item_by_uuid(scene, uuid.c_str());
+	if (!item) {
+		obs_scene_release(scene);
+		return false;
+	}
+	obs_sceneitem_select(item, true);
+	obs_scene_release(scene);
+	return true;
+}
+
+void MsrVerticalCanvas::clear_selection()
+{
+	obs_scene_t *scene = program_scene();
+	if (!scene)
+		return;
+	obs_scene_enum_items(
+		scene,
+		[](obs_scene_t *, obs_sceneitem_t *it, void *) {
+			obs_sceneitem_select(it, false);
+			return true;
+		},
+		nullptr);
+	obs_scene_release(scene);
+}
+
+std::string MsrVerticalCanvas::selected_source_name()
+{
+	std::string name;
+	obs_scene_t *scene = program_scene();
+	if (!scene)
+		return name;
+	struct Ctx {
+		std::string *out;
+	} ctx{&name};
+	obs_scene_enum_items(
+		scene,
+		[](obs_scene_t *, obs_sceneitem_t *it, void *p) {
+			auto *c = static_cast<Ctx *>(p);
+			if (obs_sceneitem_selected(it)) {
+				const char *n = obs_source_get_name(obs_sceneitem_get_source(it));
+				if (n)
+					*c->out = n;
+			}
+			return true;
+		},
+		&ctx);
+	obs_scene_release(scene);
+	return name;
+}
+
+bool MsrVerticalCanvas::nudge_selected(float dx, float dy)
+{
+	obs_scene_t *scene = program_scene();
+	if (!scene)
+		return false;
+	bool any = false;
+	struct Ctx {
+		float dx, dy;
+		bool *any;
+	} ctx{dx, dy, &any};
+	obs_scene_enum_items(
+		scene,
+		[](obs_scene_t *, obs_sceneitem_t *it, void *p) {
+			auto *c = static_cast<Ctx *>(p);
+			if (!obs_sceneitem_selected(it) || obs_sceneitem_locked(it))
+				return true;
+			vec2 pos;
+			obs_sceneitem_get_pos(it, &pos);
+			pos.x = std::round(pos.x + c->dx);
+			pos.y = std::round(pos.y + c->dy);
+			obs_sceneitem_set_pos(it, &pos);
+			*c->any = true;
+			return true;
+		},
+		&ctx);
+	obs_scene_release(scene);
+	return any;
+}
+
+
+bool MsrVerticalCanvas::set_item_audio_enabled(const std::string &source_name, bool enabled)
+{
+	obs_source_t *src = obs_get_source_by_name(source_name.c_str());
+	if (!src)
+		return false;
+	MsrVerticalAudioMix::set_source_audio_enabled(src, enabled);
+	obs_source_release(src);
+	rebuild_audio_mix();
+	obs_log(LOG_INFO, "vertical audio %s for '%s'", enabled ? "enabled" : "muted", source_name.c_str());
+	return true;
+}
+
+bool MsrVerticalCanvas::item_audio_enabled(const std::string &source_name)
+{
+	obs_source_t *src = obs_get_source_by_name(source_name.c_str());
+	if (!src)
+		return true;
+	const bool en = MsrVerticalAudioMix::source_audio_enabled(src);
+	obs_source_release(src);
+	return en;
+}
+
+audio_t *MsrVerticalCanvas::audio()
+{
+	audio_t *a = audio_mix_.audio();
+	rebuild_audio_mix();
+	return a;
+}
+
+void MsrVerticalCanvas::rebuild_audio_mix()
+{
+	/* Ensure mix is open so rebuild can attach captures. */
+	(void)audio_mix_.audio();
+	obs_scene_t *scene = program_scene();
+	audio_mix_.rebuild(scene);
+	if (scene)
+		obs_scene_release(scene);
 }

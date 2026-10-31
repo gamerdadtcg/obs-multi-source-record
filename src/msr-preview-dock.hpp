@@ -25,6 +25,8 @@ class QResizeEvent;
 class QPaintEvent;
 class QMouseEvent;
 class QWheelEvent;
+class QKeyEvent;
+class QContextMenuEvent;
 
 enum class MsrItemHandle : uint32_t {
 	None = 0,
@@ -60,6 +62,11 @@ protected:
 	void mousePressEvent(QMouseEvent *event) override;
 	void mouseMoveEvent(QMouseEvent *event) override;
 	void mouseReleaseEvent(QMouseEvent *event) override;
+	void keyPressEvent(QKeyEvent *event) override;
+	void contextMenuEvent(QContextMenuEvent *event) override;
+
+signals:
+	void selection_changed(const QString &source_name);
 
 private:
 	void create_display();
@@ -119,6 +126,9 @@ private slots:
 	void on_move_up();
 	void on_move_down();
 	void on_fit_selected();
+	void on_list_selection_changed();
+	void on_preview_selection_changed(const QString &name);
+	void on_audio_button_clicked();
 	void rebuild_source_list();
 
 private:

@@ -15,6 +15,8 @@ the Free Software Foundation; either version 2 of the License, or
 #include <vector>
 #include <mutex>
 
+#include "msr-vertical-audio.hpp"
+
 /**
  * Owns the MSR Vertical obs_canvas (OBS 31+).
  * Follows the main program scene (Aitum-style linked scene): same source refs,
@@ -39,9 +41,7 @@ public:
 	uint32_t height() const { return height_; }
 	bool ready() const;
 
-	/** Switch/create the vertical scene that mirrors the current main scene and sync sources. */
 	bool follow_main_scene();
-	/** Name of the main scene currently mirrored (empty if none). */
 	std::string followed_scene_name() const;
 
 	std::vector<std::string> list_scenes();
@@ -49,8 +49,24 @@ public:
 	bool create_scene(const std::string &scene_name);
 	bool add_existing_source(const std::string &source_name);
 	bool fit_source(const std::string &source_name);
+	bool stretch_source(const std::string &source_name);
+	bool center_source(const std::string &source_name);
+	bool reset_source_transform(const std::string &source_name);
 	bool set_item_visible(const std::string &source_name, bool visible);
+	bool item_visible(const std::string &source_name);
 	bool reorder_source(const std::string &source_name, bool move_up);
+
+	bool select_source(const std::string &source_name, bool exclusive = true);
+	bool select_source_uuid(const std::string &uuid, bool exclusive = true);
+	void clear_selection();
+	std::string selected_source_name();
+	bool nudge_selected(float dx, float dy);
+
+	/** Vertical-only audio: mute excludes source from vertical record/stream mix. Main unchanged. */
+	bool set_item_audio_enabled(const std::string &source_name, bool enabled);
+	bool item_audio_enabled(const std::string &source_name);
+	audio_t *audio();
+	void rebuild_audio_mix();
 
 private:
 	MsrVerticalCanvas() = default;
@@ -69,10 +85,11 @@ private:
 	static void on_main_item_remove(void *data, calldata_t *cd);
 
 	mutable std::mutex mutex_;
-	obs_canvas_t *canvas_ = nullptr; /* strong */
+	obs_canvas_t *canvas_ = nullptr;
 	uint32_t width_ = 0;
 	uint32_t height_ = 0;
 	std::string followed_name_;
-	obs_source_t *main_signal_source_ = nullptr; /* weak-ish: we only use for disconnect */
+	obs_source_t *main_signal_source_ = nullptr;
+	MsrVerticalAudioMix audio_mix_;
 	static MsrVerticalCanvas *instance_;
 };

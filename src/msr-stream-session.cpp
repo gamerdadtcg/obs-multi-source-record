@@ -142,10 +142,20 @@ bool MsrStreamSession::setup_video()
 		height_ = ovi.output_height;
 	}
 
-	audio_output_ = obs_get_audio();
-	if (!audio_output_) {
-		obs_log(LOG_ERROR, "main audio missing for stream '%s'", dest_.name.c_str());
-		return false;
+	if (dest_.orientation == MsrOrientation::Vertical) {
+		auto *vc = MsrVerticalCanvas::instance();
+		audio_output_ = vc ? vc->audio() : nullptr;
+		if (!audio_output_) {
+			obs_log(LOG_ERROR, "vertical audio mix missing for stream '%s'", dest_.name.c_str());
+			return false;
+		}
+		obs_log(LOG_INFO, "stream '%s' using vertical private audio mix", dest_.name.c_str());
+	} else {
+		audio_output_ = obs_get_audio();
+		if (!audio_output_) {
+			obs_log(LOG_ERROR, "main audio missing for stream '%s'", dest_.name.c_str());
+			return false;
+		}
 	}
 	return true;
 }
@@ -180,7 +190,10 @@ bool MsrStreamSession::setup_encoders_and_output()
 	obs_encoder_set_video(video_encoder_, video_output_);
 	obs_encoder_set_scaled_size(video_encoder_, width_, height_);
 
+	/* Vertical private mix only feeds mixer index 0. */
 	uint32_t mask = dest_.audio_track_mask ? dest_.audio_track_mask : 1u;
+	if (dest_.orientation == MsrOrientation::Vertical)
+		mask = 1u;
 	size_t attached = 0;
 	for (size_t mix = 0; mix < MAX_AUDIO_MIXES; mix++) {
 		if (!(mask & (1u << mix)))

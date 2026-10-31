@@ -29,7 +29,14 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QMouseEvent>
 #include <QWindow>
 #include <QSizePolicy>
+#include <QSize>
 #include <QGuiApplication>
+#include <QSignalBlocker>
+#include <QToolButton>
+#include <QCheckBox>
+#include <QMenu>
+#include <QContextMenuEvent>
+#include <QKeyEvent>
 #include <cmath>
 #include <algorithm>
 
@@ -51,7 +58,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 namespace {
 
-constexpr float HANDLE_RADIUS = 10.0f;
+constexpr float HANDLE_RADIUS = 14.0f;
 
 inline QSize pixel_size(QWidget *w)
 {
@@ -78,6 +85,7 @@ inline void get_scale_and_center(int baseCX, int baseCY, int windowCX, int windo
 
 struct EnumItemsCtx {
 	QListWidget *list;
+	MsrPreviewDock *dock;
 };
 
 bool enum_scene_items_cb(obs_scene_t *, obs_sceneitem_t *item, void *param)
@@ -87,10 +95,53 @@ bool enum_scene_items_cb(obs_scene_t *, obs_sceneitem_t *item, void *param)
 	const char *name = obs_source_get_name(src);
 	if (!name || !*name)
 		return true;
-	auto *row = new QListWidgetItem(QString::fromUtf8(name));
-	row->setFlags(row->flags() | Qt::ItemIsUserCheckable | Qt::ItemIsEnabled | Qt::ItemIsSelectable);
-	row->setCheckState(obs_sceneitem_visible(item) ? Qt::Checked : Qt::Unchecked);
-	ctx->list->insertItem(0, row);
+
+	auto *vc = MsrVerticalCanvas::instance();
+	const QString qname = QString::fromUtf8(name);
+
+	auto *row_item = new QListWidgetItem();
+	row_item->setData(Qt::UserRole, qname);
+	row_item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+	ctx->list->insertItem(0, row_item);
+
+	auto *row = new QWidget(ctx->list);
+	auto *hl = new QHBoxLayout(row);
+	hl->setContentsMargins(2, 0, 2, 0);
+	hl->setSpacing(4);
+
+	auto *vis = new QCheckBox(row);
+	vis->setToolTip(QString::fromUtf8(obs_module_text("VerticalVideoToggleTip")));
+	vis->setChecked(obs_sceneitem_visible(item));
+	vis->setText(QString::fromUtf8("V"));
+
+	auto *aud = new QToolButton(row);
+	aud->setCheckable(true);
+	aud->setAutoRaise(true);
+	aud->setText(QString::fromUtf8("A"));
+	aud->setToolTip(QString::fromUtf8(obs_module_text("VerticalAudioToggleTip")));
+	aud->setChecked(vc ? vc->item_audio_enabled(name) : true);
+	aud->setStyleSheet(QStringLiteral(
+		"QToolButton:checked { color: #6c6; font-weight: bold; }"
+		"QToolButton:!checked { color: #666; }"));
+
+	auto *lab = new QLabel(qname, row);
+	hl->addWidget(vis);
+	hl->addWidget(aud);
+	hl->addWidget(lab, 1);
+
+	ctx->list->setItemWidget(row_item, row);
+	row_item->setSizeHint(row->sizeHint().expandedTo(QSize(0, 22)));
+
+	QObject::connect(vis, &QCheckBox::toggled, ctx->list, [qname](bool on) {
+		auto *v = MsrVerticalCanvas::instance();
+		if (v)
+			v->set_item_visible(qname.toStdString(), on);
+	});
+	QObject::connect(aud, &QToolButton::toggled, ctx->list, [qname](bool on) {
+		auto *v = MsrVerticalCanvas::instance();
+		if (v)
+			v->set_item_audio_enabled(qname.toStdString(), on);
+	});
 	return true;
 }
 
@@ -353,7 +404,7 @@ bool MsrPreviewDisplay::draw_selected_cb(obs_scene_t *, obs_sceneitem_t *item, v
 	gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
 	gs_eparam_t *color = gs_effect_get_param_by_name(solid, "color");
 	vec4 outline;
-	vec4_set(&outline, 0.82f, 0.82f, 0.82f, 1.0f);
+	vec4_set(&outline, 1.0f, 0.18f, 0.18f, 1.0f);
 	gs_effect_set_vec4(color, &outline);
 
 	while (gs_effect_loop(solid, "Solid")) {
@@ -362,7 +413,7 @@ bool MsrPreviewDisplay::draw_selected_cb(obs_scene_t *, obs_sceneitem_t *item, v
 	}
 
 	/* Corner handles */
-	const float hs = 0.04f;
+	const float hs = 0.06f;
 	auto draw_handle = [&](float hx, float hy) {
 		gs_render_start(true);
 		gs_vertex2f(hx - hs, hy - hs);
@@ -598,8 +649,9 @@ void MsrPreviewDisplay::mousePressEvent(QMouseEvent *event)
 		if (hit)
 			obs_sceneitem_select(hit, true);
 
-		stretch_item_ = hit;
-		stretch_handle_ = hit ? handle_at_pos(hit, world) : MsrItemHandle::None;
+		const bool locked = hit && obs_sceneitem_locked(hit);
+		stretch_item_ = (hit && !locked) ? hit : nullptr;
+		stretch_handle_ = stretch_item_ ? handle_at_pos(stretch_item_, world) : MsrItemHandle::None;
 		if (stretch_item_) {
 			stretch_start_size_ = get_item_size(stretch_item_);
 			obs_sceneitem_get_pos(stretch_item_, &stretch_start_pos_);
@@ -608,6 +660,13 @@ void MsrPreviewDisplay::mousePressEvent(QMouseEvent *event)
 				setCursor(Qt::SizeFDiagCursor);
 			else
 				setCursor(Qt::SizeAllCursor);
+		}
+		if (hit) {
+			const char *n = obs_source_get_name(obs_sceneitem_get_source(hit));
+			if (n)
+				emit selection_changed(QString::fromUtf8(n));
+		} else {
+			emit selection_changed(QString());
 		}
 		obs_scene_release(scene);
 	}
@@ -663,6 +722,63 @@ void MsrPreviewDisplay::mouseReleaseEvent(QMouseEvent *event)
 	event->accept();
 }
 
+
+void MsrPreviewDisplay::keyPressEvent(QKeyEvent *event)
+{
+	auto *vc = MsrVerticalCanvas::instance();
+	if (!vc) {
+		QWidget::keyPressEvent(event);
+		return;
+	}
+	float step = (event->modifiers() & Qt::ShiftModifier) ? 10.0f : 1.0f;
+	bool handled = false;
+	switch (event->key()) {
+	case Qt::Key_Left:
+		handled = vc->nudge_selected(-step, 0.0f);
+		break;
+	case Qt::Key_Right:
+		handled = vc->nudge_selected(step, 0.0f);
+		break;
+	case Qt::Key_Up:
+		handled = vc->nudge_selected(0.0f, -step);
+		break;
+	case Qt::Key_Down:
+		handled = vc->nudge_selected(0.0f, step);
+		break;
+	default:
+		break;
+	}
+	if (handled)
+		event->accept();
+	else
+		QWidget::keyPressEvent(event);
+}
+
+void MsrPreviewDisplay::contextMenuEvent(QContextMenuEvent *event)
+{
+	auto *vc = MsrVerticalCanvas::instance();
+	std::string name = vc ? vc->selected_source_name() : std::string();
+	if (!vc || name.empty()) {
+		QWidget::contextMenuEvent(event);
+		return;
+	}
+	QMenu menu(this);
+	QAction *fit = menu.addAction(QString::fromUtf8(obs_module_text("VerticalFit")));
+	QAction *stretch = menu.addAction(QString::fromUtf8(obs_module_text("VerticalStretch")));
+	QAction *center = menu.addAction(QString::fromUtf8(obs_module_text("VerticalCenter")));
+	QAction *reset = menu.addAction(QString::fromUtf8(obs_module_text("VerticalResetTransform")));
+	QAction *picked = menu.exec(event->globalPos());
+	if (picked == fit)
+		vc->fit_source(name);
+	else if (picked == stretch)
+		vc->stretch_source(name);
+	else if (picked == center)
+		vc->center_source(name);
+	else if (picked == reset)
+		vc->reset_source_transform(name);
+	event->accept();
+}
+
 /* ---- MsrPreviewDock ----------------------------------------------------- */
 
 MsrPreviewDock::MsrPreviewDock(QWidget *parent) : QWidget(parent)
@@ -697,9 +813,14 @@ void MsrPreviewDock::build_ui()
 	root->addWidget(new QLabel(QString::fromUtf8(obs_module_text("VerticalSources")), this));
 	source_list_ = new QListWidget(this);
 	source_list_->setMinimumHeight(80);
-	source_list_->setMaximumHeight(160);
+	source_list_->setMaximumHeight(180);
 	root->addWidget(source_list_);
-	connect(source_list_, &QListWidget::itemChanged, this, &MsrPreviewDock::on_visibility_toggled);
+	connect(source_list_, &QListWidget::currentItemChanged, this, [this](QListWidgetItem *, QListWidgetItem *) {
+		on_list_selection_changed();
+	});
+	if (display_)
+		connect(display_, &MsrPreviewDisplay::selection_changed, this,
+			&MsrPreviewDock::on_preview_selection_changed);
 
 	auto *btn_row = new QHBoxLayout();
 	auto *up_btn = new QPushButton(QString::fromUtf8(obs_module_text("VerticalMoveUp")), this);
@@ -766,13 +887,15 @@ void MsrPreviewDock::rebuild_source_list()
 		updating_ui_ = false;
 		return;
 	}
-	EnumItemsCtx ctx{source_list_};
+	EnumItemsCtx ctx{source_list_, this};
 	obs_scene_enum_items(scene, enum_scene_items_cb, &ctx);
 	obs_scene_release(scene);
 
 	if (!sel.isEmpty()) {
 		for (int i = 0; i < source_list_->count(); i++) {
-			if (source_list_->item(i)->text() == sel) {
+			auto *it = source_list_->item(i);
+			const QString n = it->data(Qt::UserRole).toString();
+			if (n == sel || it->text() == sel) {
 				source_list_->setCurrentRow(i);
 				break;
 			}
@@ -788,18 +911,48 @@ QString MsrPreviewDock::selected_source_name() const
 	if (!source_list_)
 		return {};
 	auto *item = source_list_->currentItem();
-	return item ? item->text() : QString();
+	if (!item)
+		return {};
+	const QString role = item->data(Qt::UserRole).toString();
+	return role.isEmpty() ? item->text() : role;
 }
 
 void MsrPreviewDock::on_visibility_toggled(QListWidgetItem *item)
 {
-	if (updating_ui_ || !item)
-		return;
-	auto *vc = MsrVerticalCanvas::instance();
-	if (!vc)
-		return;
-	vc->set_item_visible(item->text().toStdString(), item->checkState() == Qt::Checked);
+	UNUSED_PARAMETER(item);
 }
+
+void MsrPreviewDock::on_list_selection_changed()
+{
+	if (updating_ui_)
+		return;
+	const QString name = selected_source_name();
+	auto *vc = MsrVerticalCanvas::instance();
+	if (!vc || name.isEmpty())
+		return;
+	vc->select_source(name.toStdString(), true);
+}
+
+void MsrPreviewDock::on_preview_selection_changed(const QString &name)
+{
+	if (!source_list_ || updating_ui_)
+		return;
+	updating_ui_ = true;
+	if (name.isEmpty()) {
+		source_list_->clearSelection();
+	} else {
+		for (int i = 0; i < source_list_->count(); i++) {
+			auto *it = source_list_->item(i);
+			if (it->data(Qt::UserRole).toString() == name) {
+				source_list_->setCurrentRow(i);
+				break;
+			}
+		}
+	}
+	updating_ui_ = false;
+}
+
+void MsrPreviewDock::on_audio_button_clicked() {}
 
 void MsrPreviewDock::on_move_up()
 {

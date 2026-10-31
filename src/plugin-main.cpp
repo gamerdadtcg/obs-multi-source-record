@@ -21,6 +21,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "msr-dock.hpp"
 #include "msr-preview-dock.hpp"
 #include "msr-vertical-canvas.hpp"
+#include "msr-sources-inject.hpp"
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
@@ -112,6 +113,8 @@ bool obs_module_load(void)
 	obs_frontend_add_dock_by_id("MultiSourceRecordVerticalPreview", obs_module_text("VerticalPreviewDockTitle"),
 				    preview_dock);
 
+	MsrSourcesInject::create();
+
 	return true;
 }
 
@@ -130,6 +133,7 @@ void obs_module_unload(void)
 	preview_dock = nullptr;
 	obs_frontend_remove_dock("MultiSourceRecordDock");
 	dock_widget = nullptr;
+	MsrSourcesInject::destroy();
 	MsrController::destroy();
 	MsrVerticalCanvas::destroy();
 	obs_log(LOG_INFO, "unloaded Multi Source Record");

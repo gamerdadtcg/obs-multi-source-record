@@ -99,6 +99,7 @@ private:
 	static void ws_stop_replay(obs_data_t *request_data, obs_data_t *response_data, void *priv);
 	static void ws_vertical_add_source(obs_data_t *request_data, obs_data_t *response_data, void *priv);
 	static void ws_vertical_status(obs_data_t *request_data, obs_data_t *response_data, void *priv);
+	static void ws_vertical_set_item(obs_data_t *request_data, obs_data_t *response_data, void *priv);
 
 	std::string settings_path() const;
 	void notify_state();

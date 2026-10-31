@@ -11,6 +11,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include "msr-controller.hpp"
 #include "msr-stream-session.hpp"
 #include "msr-vertical-canvas.hpp"
+#include "msr-vertical-audio.hpp"
 #include "plugin-support.h"
 #include "obs-websocket-api.h"
 
@@ -1367,6 +1368,8 @@ void MsrController::ws_vertical_status(obs_data_t *request_data, obs_data_t *res
 			obs_data_t *row = obs_data_create();
 			obs_data_set_string(row, "name", obs_source_get_name(src));
 			obs_data_set_bool(row, "visible", obs_sceneitem_visible(item));
+			obs_data_set_bool(row, "audio_enabled",
+					 MsrVerticalAudioMix::source_audio_enabled(src));
 			vec2 pos; obs_sceneitem_get_pos(item, &pos);
 			obs_data_set_double(row, "pos_x", pos.x);
 			obs_data_set_double(row, "pos_y", pos.y);
@@ -1383,6 +1386,28 @@ void MsrController::ws_vertical_status(obs_data_t *request_data, obs_data_t *res
 	obs_data_set_array(response_data, "sources", items);
 	obs_data_array_release(items);
 	obs_data_set_bool(response_data, "success", true);
+}
+
+
+void MsrController::ws_vertical_set_item(obs_data_t *request_data, obs_data_t *response_data, void *priv)
+{
+	UNUSED_PARAMETER(priv);
+	obs_data_set_bool(response_data, "success", false);
+	const char *name = request_data ? obs_data_get_string(request_data, "source_name") : nullptr;
+	if (!name || !*name)
+		return;
+	auto *vc = MsrVerticalCanvas::instance();
+	if (!vc)
+		return;
+	bool ok = true;
+	if (obs_data_has_user_value(request_data, "visible"))
+		ok = vc->set_item_visible(name, obs_data_get_bool(request_data, "visible")) && ok;
+	if (obs_data_has_user_value(request_data, "audio_enabled"))
+		ok = vc->set_item_audio_enabled(name, obs_data_get_bool(request_data, "audio_enabled")) && ok;
+	obs_data_set_bool(response_data, "success", ok);
+	obs_data_set_string(response_data, "source_name", name);
+	obs_data_set_bool(response_data, "visible", vc->item_visible(name));
+	obs_data_set_bool(response_data, "audio_enabled", vc->item_audio_enabled(name));
 }
 
 void MsrController::register_websocket()
@@ -1410,5 +1435,6 @@ void MsrController::register_websocket()
 	obs_websocket_vendor_register_request(ws_vendor_, "stop_replay", ws_stop_replay, this);
 	obs_websocket_vendor_register_request(ws_vendor_, "vertical_add_source", ws_vertical_add_source, this);
 	obs_websocket_vendor_register_request(ws_vendor_, "vertical_status", ws_vertical_status, this);
+	obs_websocket_vendor_register_request(ws_vendor_, "vertical_set_item", ws_vertical_set_item, this);
 	obs_log(LOG_INFO, "registered obs-websocket vendor obs-multi-source-record");
 }

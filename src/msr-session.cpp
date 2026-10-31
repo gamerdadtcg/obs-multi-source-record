@@ -409,6 +409,24 @@ bool MsrSession::setup_video()
 
 bool MsrSession::setup_audio()
 {
+	/* Vertical canvas record/replay: use the canvas private mix so per-source
+	 * vertical audio mute applies. Main/horizontal audio is untouched. */
+	if (use_vertical_canvas_) {
+		auto *vc = MsrVerticalCanvas::instance();
+		if (!vc) {
+			obs_log(LOG_ERROR, "vertical canvas missing for audio");
+			return false;
+		}
+		audio_output_ = vc->audio();
+		if (!audio_output_) {
+			obs_log(LOG_ERROR, "vertical audio mix unavailable");
+			return false;
+		}
+		owns_audio_output_ = false;
+		obs_log(LOG_INFO, "using vertical private audio mix for '%s'", source_name_.c_str());
+		return true;
+	}
+
 	/* Ignore extra when blank or the same as the video source — selecting
 	 * "Game Capture" as its own extra registered the callback twice and
 	 * doubled every audio buffer in the FIFO. */
@@ -674,6 +692,8 @@ void MsrSession::teardown()
 		audio_output_close(audio_output_);
 		audio_output_ = nullptr;
 		owns_audio_output_ = false;
+	} else {
+		audio_output_ = nullptr; /* canvas-owned mix */
 	}
 	deactivate_sources();
 	if (use_vertical_canvas_) {
