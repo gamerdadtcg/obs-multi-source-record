@@ -157,15 +157,10 @@ static void get_cropped_source_size(obs_sceneitem_t *item, float &cx, float &cy)
  */
 static void get_selection_box_transform(obs_sceneitem_t *item, matrix4 *out)
 {
-	/*
-	 * Bounds items: use OBS box_transform (unit square → bounds rect). Matches
-	 * main-preview handle hit-testing and puts handles on the bounds corners the
-	 * user expects. BOUNDS_NONE: draw_transform × cropped size → content quad.
-	 */
-	if (obs_sceneitem_get_bounds_type(item) != OBS_BOUNDS_NONE) {
-		obs_sceneitem_get_box_transform(item, out);
-		return;
-	}
+	/* Always the visible content quad — never bare box_transform.
+	 * For SCALE_INNER/OUTER letterboxing, box_transform is the full bounds
+	 * (e.g. 1080×1920) while draw×crop tightly wraps the fitted pixels.
+	 * Outline, handles, hit-test, and stretch_start_size_ all use this. */
 	float cx, cy;
 	get_cropped_source_size(item, cx, cy);
 	matrix4 draw;
@@ -553,7 +548,7 @@ bool MsrPreviewDisplay::draw_selected_cb(obs_scene_t *, obs_sceneitem_t *item, v
 	if (!obs_sceneitem_selected(item) || !obs_sceneitem_visible(item))
 		return true;
 
-	/* Unit-square under selection transform (box for bounds, content otherwise). */
+	/* Unit-square under content selection transform (draw × cropped size). */
 	matrix4 sel;
 	get_selection_box_transform(item, &sel);
 
@@ -906,11 +901,12 @@ void MsrPreviewDisplay::stretch_selected(const vec2 &pos)
 
 	obs_sceneitem_defer_update_begin(stretch_item_);
 	/*
-	 * Bounds-aware resize:
-	 * - Shift: free STRETCH bounds sized to the dragged rect.
-	 * - Started with bounds (SCALE_INNER/etc.): keep a bounds type and set
-	 *   bounds size so letterboxed fit still works (do not drop to scale-only).
-	 * - Otherwise: BOUNDS_NONE + uniform scale (aspect).
+	 * size / stretch_start_size_ are the *visible* content size (draw×crop),
+	 * so the first drag frame matches on-screen pixels (no jump to full canvas).
+	 * - Shift: free STRETCH bounds = dragged rect.
+	 * - Started with bounds: keep type (SCALE_INNER/etc.), set bounds = size
+	 *   (content fills that box under the fit mode).
+	 * - Else: BOUNDS_NONE + uniform scale (aspect locked via clamp_aspect).
 	 */
 	obs_sceneitem_set_bounds_alignment(stretch_item_, OBS_ALIGN_TOP | OBS_ALIGN_LEFT);
 	obs_sceneitem_set_alignment(stretch_item_, OBS_ALIGN_TOP | OBS_ALIGN_LEFT);
