@@ -891,6 +891,19 @@ void MsrController::register_hotkey()
 	if (replay_hotkey_id_ == OBS_INVALID_HOTKEY_ID) {
 		replay_hotkey_id_ = obs_hotkey_register_frontend("msr.save_replay", "Multi Source Record: Save Clip",
 								 replay_hotkey_pressed, this);
+		/* Default Stream Deck binding when none saved yet: Ctrl+Alt+Shift+F9. */
+		if (replay_hotkey_id_ != OBS_INVALID_HOTKEY_ID) {
+			obs_data_array_t *existing = obs_hotkey_save(replay_hotkey_id_);
+			const size_t n = existing ? obs_data_array_count(existing) : 0;
+			if (existing)
+				obs_data_array_release(existing);
+			if (n == 0) {
+				obs_key_combination_t combo = {};
+				combo.key = OBS_KEY_F9;
+				combo.modifiers = INTERACT_CONTROL_KEY | INTERACT_ALT_KEY | INTERACT_SHIFT_KEY;
+				obs_hotkey_load_bindings(replay_hotkey_id_, &combo, 1);
+			}
+		}
 	}
 	if (chapter_hotkey_id_ == OBS_INVALID_HOTKEY_ID) {
 		chapter_hotkey_id_ = obs_hotkey_register_frontend("msr.chapter", "Multi Source Record: Add Chapter",
