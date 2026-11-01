@@ -260,7 +260,7 @@ void MsrDock::build_ui()
 	split_row->addStretch(1);
 	opts_l->addLayout(split_row);
 
-	/* Replay buffer — default closed */
+	/* Clipping (replay buffer) — default closed */
 	auto *replay_body = add_section(QString::fromUtf8(obs_module_text("ReplayBuffer")), "SectionReplay", false);
 	auto *replay_l = qobject_cast<QVBoxLayout *>(replay_body->layout());
 	auto *replay_row = new QHBoxLayout();
@@ -274,6 +274,9 @@ void MsrDock::build_ui()
 	auto *rb_hint = new QLabel(QString::fromUtf8(obs_module_text("ReplayHint")), replay_body);
 	rb_hint->setWordWrap(true);
 	replay_l->addWidget(rb_hint);
+	clipping_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("StartClipping")), replay_body);
+	connect(clipping_btn_, &QPushButton::clicked, this, &MsrDock::on_start_stop_clipping);
+	replay_l->addWidget(clipping_btn_);
 
 	/* Advanced — default closed */
 	advanced_box_ = add_section(QString::fromUtf8(obs_module_text("Advanced")), "SectionAdvanced", false);
@@ -791,6 +794,11 @@ void MsrDock::refresh_status_labels()
 		}
 	}
 
+	if (clipping_btn_) {
+		clipping_btn_->setText(
+			QString::fromUtf8(obs_module_text(replaying ? "StopClipping" : "StartClipping")));
+	}
+
 	if (stream_btn_) {
 		stream_btn_->setText(
 			QString::fromUtf8(obs_module_text(streaming ? "StopStreaming" : "StartStreaming")));
@@ -860,6 +868,19 @@ void MsrDock::on_start_stop_stream()
 		c->stop_streams();
 	else
 		c->start_streams();
+	refresh_status_labels();
+}
+
+void MsrDock::on_start_stop_clipping()
+{
+	auto *c = MsrController::instance();
+	if (!c)
+		return;
+	apply_to_controller();
+	if (c->replaying())
+		c->stop_replays();
+	else
+		c->start_replays();
 	refresh_status_labels();
 }
 

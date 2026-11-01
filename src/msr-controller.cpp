@@ -889,7 +889,7 @@ void MsrController::register_hotkey()
 								 stream_hotkey_pressed, this);
 	}
 	if (replay_hotkey_id_ == OBS_INVALID_HOTKEY_ID) {
-		replay_hotkey_id_ = obs_hotkey_register_frontend("msr.save_replay", "Multi Source Record: Save Replay",
+		replay_hotkey_id_ = obs_hotkey_register_frontend("msr.save_replay", "Multi Source Record: Save Clip",
 								 replay_hotkey_pressed, this);
 	}
 	if (chapter_hotkey_id_ == OBS_INVALID_HOTKEY_ID) {

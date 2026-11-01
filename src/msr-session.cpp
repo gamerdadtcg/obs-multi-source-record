@@ -515,7 +515,7 @@ bool MsrSession::setup_encoders_and_output()
 		dir_buf.push_back('\0');
 		os_mkdirs(dir_buf.data());
 		std::string fmt = sanitize_name(source_name_) + "_" + orientation_token(orientation_) +
-				  "_replay_%CCYY-%MM-%DD_%hh-%mm-%ss";
+				  "_clip_%CCYY-%MM-%DD_%hh-%mm-%ss";
 		int rb_sec = settings_.replay_seconds > 0 ? settings_.replay_seconds : 30;
 		/* Cap RAM: allow ~2x bitrate-ish MB as soft max (0 = time-only). */
 		int rb_mb = (settings_.video_bitrate_kbps * rb_sec) / (8 * 1024);
