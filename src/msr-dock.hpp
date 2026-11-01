@@ -74,7 +74,6 @@ private:
 	void build_ui();
 	void save_window_geometry();
 	void restore_window_geometry();
-	void save_section_states();
 	void restore_section_states();
 	QWidget *floating_host() const;
 	void load_from_controller();

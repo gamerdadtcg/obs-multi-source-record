@@ -172,7 +172,6 @@ void MsrDock::build_ui()
 						bool default_open) -> QWidget * {
 		SectionWidgets sw = make_collapsible(content, title, default_open);
 		sections_.push_back(SectionRef{sw.toggle, sw.body, key, default_open});
-		connect(sw.toggle, &QToolButton::toggled, this, [this](bool) { save_section_states(); });
 		root->addWidget(sw.section);
 		return sw.body;
 	};
@@ -197,8 +196,8 @@ void MsrDock::build_ui()
 	connect(refresh, &QPushButton::clicked, this, &MsrDock::refresh_sources);
 	sources_l->addWidget(refresh);
 
-	/* Output — default closed */
-	auto *output_body = add_section(QString::fromUtf8(obs_module_text("Output")), "SectionOutput", false);
+	/* Output — default open */
+	auto *output_body = add_section(QString::fromUtf8(obs_module_text("Output")), "SectionOutput", true);
 	auto *output_l = qobject_cast<QVBoxLayout *>(output_body->layout());
 	auto *folder_row = new QHBoxLayout();
 	folder_edit_ = new QLineEdit(output_body);
@@ -220,9 +219,9 @@ void MsrDock::build_ui()
 	fmt_row->addWidget(container_combo_, 1);
 	output_l->addLayout(fmt_row);
 
-	/* Recording options — default open */
+	/* Recording options — default closed */
 	auto *opts_body = add_section(QString::fromUtf8(obs_module_text("RecordingOptions")), "SectionRecording",
-				      true);
+				      false);
 	auto *opts_l = qobject_cast<QVBoxLayout *>(opts_body->layout());
 	auto_start_combo_ = new QComboBox(opts_body);
 	auto_start_combo_->addItem(QString::fromUtf8(obs_module_text("AutoStartOff")), (int)MsrAutoStartTrigger::Off);
@@ -924,33 +923,14 @@ QWidget *MsrDock::floating_host() const
 	return const_cast<MsrDock *>(this);
 }
 
-void MsrDock::save_section_states()
-{
-	config_t *cfg = obs_frontend_get_user_config();
-	if (!cfg)
-		cfg = obs_frontend_get_app_config();
-	if (!cfg)
-		return;
-	for (const SectionRef &sec : sections_) {
-		if (!sec.toggle || !sec.key)
-			continue;
-		config_set_bool(cfg, "obs-multi-source-record", sec.key, sec.toggle->isChecked());
-	}
-	config_save_safe(cfg, "tmp", nullptr);
-}
-
 void MsrDock::restore_section_states()
 {
-	config_t *cfg = obs_frontend_get_user_config();
-	if (!cfg)
-		cfg = obs_frontend_get_app_config();
+	/* Always apply built-in defaults when the dock opens — do not restore
+	 * previously saved expand/collapse states. */
 	for (const SectionRef &sec : sections_) {
-		if (!sec.toggle || !sec.key)
+		if (!sec.toggle)
 			continue;
-		bool open = sec.default_open;
-		if (cfg && config_has_user_value(cfg, "obs-multi-source-record", sec.key))
-			open = config_get_bool(cfg, "obs-multi-source-record", sec.key);
-		sec.toggle->setChecked(open);
+		sec.toggle->setChecked(sec.default_open);
 	}
 }
 
@@ -967,7 +947,6 @@ void MsrDock::save_window_geometry()
 	const QByteArray geo = host->saveGeometry().toBase64();
 	config_set_string(cfg, "obs-multi-source-record", "DockGeometry", geo.constData());
 	config_save_safe(cfg, "tmp", nullptr);
-	save_section_states();
 }
 
 void MsrDock::restore_window_geometry()
