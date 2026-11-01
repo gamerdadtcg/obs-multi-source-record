@@ -2,7 +2,7 @@
 Multi Source Record for OBS Studio
 Copyright (C) 2026 Travvvman
 
-Injects per-source vertical video + audio toggles into the main OBS Sources
+Injects per-source H / V / A toggles into the main OBS Sources
 list (next to eye/lock). Fail-soft if the SourceTree layout is unexpected.
 */
 #pragma once

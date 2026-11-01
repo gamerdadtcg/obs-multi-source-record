@@ -381,7 +381,9 @@ bool MsrVerticalCanvas::sync_from_main(obs_scene_t *main_scene, obs_scene_t *ver
 		obs_sceneitem_t *added = obs_scene_add(vert_scene, src);
 		if (added) {
 			apply_default_vertical_transform(added);
-			obs_sceneitem_set_visible(added, obs_sceneitem_visible(mitem));
+			/* H-hide on main must not hide the vertical twin. */
+			const bool hide_h = sceneitem_hide_horizontal(mitem);
+			obs_sceneitem_set_visible(added, hide_h ? true : obs_sceneitem_visible(mitem));
 			const char *n = obs_source_get_name(src);
 			obs_log(LOG_INFO, "vertical sync: added '%s'", n ? n : "?");
 		}
@@ -411,6 +413,7 @@ void MsrVerticalCanvas::detach_main_signals()
 	if (sh) {
 		signal_handler_disconnect(sh, "item_add", on_main_item_add, this);
 		signal_handler_disconnect(sh, "item_remove", on_main_item_remove, this);
+		signal_handler_disconnect(sh, "item_visible", on_main_item_visible, this);
 	}
 	main_signal_source_ = nullptr;
 }
@@ -426,6 +429,7 @@ void MsrVerticalCanvas::attach_main_signals(obs_source_t *main_scene_source)
 		return;
 	signal_handler_connect(sh, "item_add", on_main_item_add, this);
 	signal_handler_connect(sh, "item_remove", on_main_item_remove, this);
+	signal_handler_connect(sh, "item_visible", on_main_item_visible, this);
 }
 
 void MsrVerticalCanvas::on_main_item_add(void *data, calldata_t *)
@@ -485,6 +489,7 @@ bool MsrVerticalCanvas::follow_main_scene()
 	attach_main_signals(main_src);
 	obs_log(LOG_INFO, "vertical canvas following main scene '%s'", name);
 	obs_source_release(main_src);
+	apply_horizontal_hides();
 	rebuild_audio_mix();
 	return true;
 }
@@ -757,6 +762,119 @@ bool MsrVerticalCanvas::nudge_selected(float dx, float dy)
 		&ctx);
 	obs_scene_release(scene);
 	return any;
+}
+
+
+
+void MsrVerticalCanvas::on_main_item_visible(void *data, calldata_t *cd)
+{
+	auto *self = static_cast<MsrVerticalCanvas *>(data);
+	if (!self || self->applying_hide_horizontal_.load())
+		return;
+	obs_sceneitem_t *item = (obs_sceneitem_t *)calldata_ptr(cd, "item");
+	if (!item || !sceneitem_hide_horizontal(item))
+		return;
+	const bool visible = calldata_bool(cd, "visible");
+	if (!visible)
+		return;
+	/* Sticky H: keep main hidden while the flag is set. */
+	self->applying_hide_horizontal_.store(true);
+	obs_sceneitem_set_visible(item, false);
+	self->applying_hide_horizontal_.store(false);
+}
+
+bool MsrVerticalCanvas::sceneitem_hide_horizontal(obs_sceneitem_t *item)
+{
+	if (!item)
+		return false;
+	obs_data_t *ps = obs_sceneitem_get_private_settings(item);
+	if (!ps)
+		return false;
+	bool hide = false;
+	if (obs_data_has_user_value(ps, kHideHorizontalKey))
+		hide = obs_data_get_bool(ps, kHideHorizontalKey);
+	obs_data_release(ps);
+	return hide;
+}
+
+void MsrVerticalCanvas::sceneitem_set_hide_horizontal(obs_sceneitem_t *item, bool hide)
+{
+	if (!item)
+		return;
+	obs_data_t *ps = obs_sceneitem_get_private_settings(item);
+	if (!ps)
+		return;
+	obs_data_set_bool(ps, kHideHorizontalKey, hide);
+	obs_data_release(ps);
+}
+
+bool MsrVerticalCanvas::set_item_hide_horizontal(const std::string &source_name, bool hide)
+{
+	if (source_name.empty())
+		return false;
+	obs_source_t *main_src = obs_frontend_get_current_scene();
+	if (!main_src)
+		return false;
+	obs_scene_t *main_scene = obs_scene_from_source(main_src);
+	obs_sceneitem_t *item = main_scene ? find_item_by_name(main_scene, source_name) : nullptr;
+	if (!item) {
+		obs_source_release(main_src);
+		return false;
+	}
+	sceneitem_set_hide_horizontal(item, hide);
+	applying_hide_horizontal_.store(true);
+	obs_sceneitem_set_visible(item, !hide);
+	applying_hide_horizontal_.store(false);
+	obs_source_release(main_src);
+	if (hide) {
+		/* Vertical-only intent: show on vertical when hiding from main. V can still hide later. */
+		obs_scene_t *vscene = program_scene();
+		if (vscene) {
+			obs_sceneitem_t *vitem = find_item_by_name(vscene, source_name);
+			if (vitem)
+				obs_sceneitem_set_visible(vitem, true);
+			obs_scene_release(vscene);
+		}
+	}
+	obs_log(LOG_INFO, "horizontal hide %s for '%s'", hide ? "on" : "off", source_name.c_str());
+	return true;
+}
+
+bool MsrVerticalCanvas::item_hide_horizontal(const std::string &source_name)
+{
+	if (source_name.empty())
+		return false;
+	obs_source_t *main_src = obs_frontend_get_current_scene();
+	if (!main_src)
+		return false;
+	obs_scene_t *main_scene = obs_scene_from_source(main_src);
+	obs_sceneitem_t *item = main_scene ? find_item_by_name(main_scene, source_name) : nullptr;
+	const bool hide = item ? sceneitem_hide_horizontal(item) : false;
+	obs_source_release(main_src);
+	return hide;
+}
+
+void MsrVerticalCanvas::apply_horizontal_hides()
+{
+	obs_source_t *main_src = obs_frontend_get_current_scene();
+	if (!main_src)
+		return;
+	obs_scene_t *main_scene = obs_scene_from_source(main_src);
+	if (!main_scene) {
+		obs_source_release(main_src);
+		return;
+	}
+	applying_hide_horizontal_.store(true);
+	obs_scene_enum_items(
+		main_scene,
+		[](obs_scene_t *, obs_sceneitem_t *it, void *) {
+			if (sceneitem_hide_horizontal(it) && obs_sceneitem_visible(it))
+				obs_sceneitem_set_visible(it, false);
+			return true;
+		},
+		nullptr);
+	applying_hide_horizontal_.store(false);
+	obs_source_release(main_src);
 }
 
 

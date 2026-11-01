@@ -14,6 +14,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <string>
 #include <vector>
 #include <mutex>
+#include <atomic>
 
 #include "msr-vertical-audio.hpp"
 
@@ -65,6 +66,13 @@ public:
 	/** Vertical-only audio: mute excludes source from vertical record/stream mix. Main unchanged. */
 	bool set_item_audio_enabled(const std::string &source_name, bool enabled);
 	bool item_audio_enabled(const std::string &source_name);
+
+	/** Hide from main/horizontal canvas only; vertical visibility stays independent (V toggle). */
+	static constexpr const char *kHideHorizontalKey = "msr_hide_horizontal";
+	bool set_item_hide_horizontal(const std::string &source_name, bool hide);
+	bool item_hide_horizontal(const std::string &source_name);
+	void apply_horizontal_hides();
+
 	audio_t *audio();
 	void rebuild_audio_mix();
 
@@ -83,6 +91,10 @@ private:
 
 	static void on_main_item_add(void *data, calldata_t *cd);
 	static void on_main_item_remove(void *data, calldata_t *cd);
+	static void on_main_item_visible(void *data, calldata_t *cd);
+
+	static bool sceneitem_hide_horizontal(obs_sceneitem_t *item);
+	static void sceneitem_set_hide_horizontal(obs_sceneitem_t *item, bool hide);
 
 	mutable std::mutex mutex_;
 	obs_canvas_t *canvas_ = nullptr;
@@ -91,5 +103,6 @@ private:
 	std::string followed_name_;
 	obs_source_t *main_signal_source_ = nullptr;
 	MsrVerticalAudioMix audio_mix_;
+	std::atomic_bool applying_hide_horizontal_{false};
 	static MsrVerticalCanvas *instance_;
 };

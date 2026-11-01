@@ -145,10 +145,18 @@ void MsrSourcesInject::inject_into_view(QListView *view)
 			continue;
 		if (row->property("msrVerticalInjected").toBool()) {
 			/* Refresh checked state on existing toggles. */
+			auto *hid = row->findChild<QToolButton *>("msrHideHorizontal");
 			auto *vid = row->findChild<QToolButton *>("msrVertVideo");
 			auto *aud = row->findChild<QToolButton *>("msrVertAudio");
 			const QString name = row->property("msrSourceName").toString();
 			if (!name.isEmpty()) {
+				if (hid) {
+					const bool hide = vc->item_hide_horizontal(name.toStdString());
+					if (hid->isChecked() != hide) {
+						QSignalBlocker b(hid);
+						hid->setChecked(hide);
+					}
+				}
 				if (vid) {
 					const bool vis = vc->item_visible(name.toStdString());
 					if (vid->isChecked() != vis) {
@@ -174,6 +182,19 @@ void MsrSourcesInject::inject_into_view(QListView *view)
 		QString name = label_text_from_row(row);
 		if (name.isEmpty())
 			continue;
+
+		auto *hid = new QToolButton(row);
+		hid->setObjectName("msrHideHorizontal");
+		hid->setCheckable(true);
+		hid->setAutoRaise(true);
+		hid->setToolTip(QString::fromUtf8(obs_module_text("HideHorizontalToggleTip")));
+		hid->setText(QString::fromUtf8("H"));
+		hid->setFixedSize(22, 22);
+		hid->setChecked(vc->item_hide_horizontal(name.toStdString()));
+		hid->setStyleSheet(QStringLiteral(
+			"QToolButton { color: #bbb; font-weight: bold; border: none; padding: 0; }"
+			"QToolButton:checked { color: #fc6; }"
+			"QToolButton:!checked { color: #666; }"));
 
 		auto *vid = new QToolButton(row);
 		vid->setObjectName("msrVertVideo");
@@ -201,13 +222,19 @@ void MsrSourcesInject::inject_into_view(QListView *view)
 			"QToolButton:checked { color: #6c6; }"
 			"QToolButton:!checked { color: #666; }"));
 
-		/* After eye/lock — append at end of the row layout. */
+		/* After eye/lock — append at end of the row layout: H, V, A. */
+		lay->addWidget(hid);
 		lay->addWidget(vid);
 		lay->addWidget(aud);
 
 		row->setProperty("msrVerticalInjected", true);
 		row->setProperty("msrSourceName", name);
 
+		QObject::connect(hid, &QToolButton::toggled, row, [name](bool on) {
+			auto *v = MsrVerticalCanvas::instance();
+			if (v)
+				v->set_item_hide_horizontal(name.toStdString(), on);
+		});
 		QObject::connect(vid, &QToolButton::toggled, row, [name](bool on) {
 			auto *v = MsrVerticalCanvas::instance();
 			if (v)
