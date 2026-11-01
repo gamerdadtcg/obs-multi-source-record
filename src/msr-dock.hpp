@@ -21,6 +21,7 @@ class QLineEdit;
 class QPushButton;
 class QLabel;
 class QSpinBox;
+class QTimer;
 class QToolButton;
 class QScrollArea;
 
@@ -62,6 +63,7 @@ public slots:
 	void on_save_replay();
 	void update_recording_state(bool recording);
 	void on_split_mode_changed(int index);
+	void refresh_status_labels();
 
 protected:
 	void showEvent(QShowEvent *event) override;
@@ -116,6 +118,17 @@ private:
 	QPushButton *stream_btn_ = nullptr;
 	QLabel *status_label_ = nullptr;
 	QLabel *stream_status_label_ = nullptr;
+	QLabel *replay_status_label_ = nullptr;
+	QTimer *status_timer_ = nullptr;
+	qint64 record_started_ms_ = 0;
+	qint64 stream_started_ms_ = 0;
+	qint64 replay_started_ms_ = 0;
+	bool was_recording_ = false;
+	bool was_streaming_ = false;
+	bool was_replaying_ = false;
 	QWidget *advanced_box_ = nullptr;
 	QWidget *multistream_box_ = nullptr;
+
+	static QString format_elapsed(qint64 elapsed_ms);
+	void sync_elapsed_anchors();
 };

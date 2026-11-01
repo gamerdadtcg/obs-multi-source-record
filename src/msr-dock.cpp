@@ -36,6 +36,8 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QSizeGrip>
 #include <QToolButton>
 #include <QObject>
+#include <QTimer>
+#include <QDateTime>
 
 #include <string>
 
@@ -111,6 +113,10 @@ SectionWidgets make_collapsible(QWidget *parent, const QString &title, bool defa
 MsrDock::MsrDock(QWidget *parent) : QWidget(parent)
 {
 	build_ui();
+	status_timer_ = new QTimer(this);
+	status_timer_->setInterval(1000);
+	connect(status_timer_, &QTimer::timeout, this, &MsrDock::refresh_status_labels);
+	status_timer_->start();
 	load_from_controller();
 	if (auto *c = MsrController::instance()) {
 		c->set_state_callback([this](bool recording) {
@@ -119,6 +125,7 @@ MsrDock::MsrDock(QWidget *parent) : QWidget(parent)
 		});
 		update_recording_state(c->recording());
 	}
+	refresh_status_labels();
 }
 
 MsrDock::~MsrDock()
@@ -353,6 +360,9 @@ void MsrDock::build_ui()
 	status_label_ = new QLabel(QString::fromUtf8(obs_module_text("StatusIdle")), footer);
 	status_label_->setWordWrap(true);
 	footer_l->addWidget(status_label_);
+	replay_status_label_ = new QLabel(QString::fromUtf8(obs_module_text("StatusReplayIdle")), footer);
+	replay_status_label_->setWordWrap(true);
+	footer_l->addWidget(replay_status_label_);
 
 	auto *grip_row = new QHBoxLayout();
 	grip_row->addStretch(1);
@@ -581,15 +591,7 @@ void MsrDock::load_from_controller()
 	on_split_mode_changed(split_mode_combo_ ? split_mode_combo_->currentIndex() : 0);
 	rebuild_source_list();
 	rebuild_dest_list();
-	if (stream_btn_) {
-		const bool streaming = c->streaming();
-		stream_btn_->setText(
-			QString::fromUtf8(obs_module_text(streaming ? "StopStreaming" : "StartStreaming")));
-		if (stream_status_label_) {
-			stream_status_label_->setText(
-				QString::fromUtf8(obs_module_text(streaming ? "StatusStreaming" : "StatusStreamIdle")));
-		}
-	}
+	refresh_status_labels();
 }
 
 void MsrDock::apply_to_controller()
@@ -707,6 +709,94 @@ void MsrDock::on_add_chapter()
 		status_label_->setText(QString::fromUtf8(obs_module_text("StatusChapterAdded")));
 }
 
+QString MsrDock::format_elapsed(qint64 elapsed_ms)
+{
+	if (elapsed_ms < 0)
+		elapsed_ms = 0;
+	const qint64 total_sec = elapsed_ms / 1000;
+	const int h = int(total_sec / 3600);
+	const int m = int((total_sec % 3600) / 60);
+	const int s = int(total_sec % 60);
+	return QStringLiteral("%1:%2:%3")
+		.arg(h, 2, 10, QChar('0'))
+		.arg(m, 2, 10, QChar('0'))
+		.arg(s, 2, 10, QChar('0'));
+}
+
+void MsrDock::sync_elapsed_anchors()
+{
+	auto *c = MsrController::instance();
+	const qint64 now = QDateTime::currentMSecsSinceEpoch();
+	const bool recording = c && c->recording();
+	const bool streaming = c && c->streaming();
+	const bool replaying = c && c->replaying();
+
+	if (recording && !was_recording_)
+		record_started_ms_ = now;
+	if (!recording)
+		record_started_ms_ = 0;
+	was_recording_ = recording;
+
+	if (streaming && !was_streaming_)
+		stream_started_ms_ = now;
+	if (!streaming)
+		stream_started_ms_ = 0;
+	was_streaming_ = streaming;
+
+	if (replaying && !was_replaying_)
+		replay_started_ms_ = now;
+	if (!replaying)
+		replay_started_ms_ = 0;
+	was_replaying_ = replaying;
+}
+
+void MsrDock::refresh_status_labels()
+{
+	sync_elapsed_anchors();
+	auto *c = MsrController::instance();
+	const qint64 now = QDateTime::currentMSecsSinceEpoch();
+	const bool recording = c && c->recording();
+	const bool paused = recording && c->paused();
+	const bool streaming = c && c->streaming();
+	const bool replaying = c && c->replaying();
+
+	if (status_label_) {
+		if (recording && record_started_ms_ > 0) {
+			const QString elapsed = format_elapsed(now - record_started_ms_);
+			status_label_->setText(
+				QString::fromUtf8(obs_module_text(paused ? "StatusPaused" : "StatusRecording"))
+					.arg(elapsed));
+		} else {
+			status_label_->setText(QString::fromUtf8(obs_module_text("StatusIdle")));
+		}
+	}
+
+	if (stream_status_label_) {
+		if (streaming && stream_started_ms_ > 0) {
+			const QString elapsed = format_elapsed(now - stream_started_ms_);
+			stream_status_label_->setText(
+				QString::fromUtf8(obs_module_text("StatusStreaming")).arg(elapsed));
+		} else {
+			stream_status_label_->setText(QString::fromUtf8(obs_module_text("StatusStreamIdle")));
+		}
+	}
+
+	if (replay_status_label_) {
+		if (replaying && replay_started_ms_ > 0) {
+			const QString elapsed = format_elapsed(now - replay_started_ms_);
+			replay_status_label_->setText(
+				QString::fromUtf8(obs_module_text("StatusReplayActive")).arg(elapsed));
+		} else {
+			replay_status_label_->setText(QString::fromUtf8(obs_module_text("StatusReplayIdle")));
+		}
+	}
+
+	if (stream_btn_) {
+		stream_btn_->setText(
+			QString::fromUtf8(obs_module_text(streaming ? "StopStreaming" : "StartStreaming")));
+	}
+}
+
 void MsrDock::update_recording_state(bool recording)
 {
 	auto *c = MsrController::instance();
@@ -715,13 +805,13 @@ void MsrDock::update_recording_state(bool recording)
 		pause_btn_->setEnabled(recording);
 		pause_btn_->setText(QString::fromUtf8(obs_module_text(paused ? "ResumeRecording" : "PauseRecording")));
 	}
-	if (recording) {
+	if (chapter_btn_)
+		chapter_btn_->setEnabled(recording && !paused);
+	if (recording)
 		start_btn_->setText(QString::fromUtf8(obs_module_text("StopRecording")));
-		status_label_->setText(QString::fromUtf8(obs_module_text(paused ? "StatusPaused" : "StatusRecording")));
-	} else {
+	else
 		start_btn_->setText(QString::fromUtf8(obs_module_text("StartRecording")));
-		status_label_->setText(QString::fromUtf8(obs_module_text("StatusIdle")));
-	}
+	refresh_status_labels();
 }
 
 void MsrDock::on_add_destination()
@@ -770,12 +860,7 @@ void MsrDock::on_start_stop_stream()
 		c->stop_streams();
 	else
 		c->start_streams();
-	const bool streaming = c->streaming();
-	stream_btn_->setText(QString::fromUtf8(obs_module_text(streaming ? "StopStreaming" : "StartStreaming")));
-	if (stream_status_label_) {
-		stream_status_label_->setText(
-			QString::fromUtf8(obs_module_text(streaming ? "StatusStreaming" : "StatusStreamIdle")));
-	}
+	refresh_status_labels();
 }
 
 void MsrDock::on_save_replay()
