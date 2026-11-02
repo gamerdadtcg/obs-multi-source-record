@@ -1385,6 +1385,12 @@ void MsrController::ws_vertical_status(obs_data_t *request_data, obs_data_t *res
 			obs_data_set_bool(row, "visible", obs_sceneitem_visible(item));
 			obs_data_set_bool(row, "audio_enabled",
 					 MsrVerticalAudioMix::source_audio_enabled(src));
+			{
+				auto *vc2 = MsrVerticalCanvas::instance();
+				const char *nm = obs_source_get_name(src);
+				obs_data_set_bool(row, "hide_horizontal",
+						  vc2 && nm && vc2->item_hide_horizontal(nm));
+			}
 			vec2 pos; obs_sceneitem_get_pos(item, &pos);
 			obs_data_set_double(row, "pos_x", pos.x);
 			obs_data_set_double(row, "pos_y", pos.y);
@@ -1454,13 +1460,39 @@ void MsrController::ws_vertical_set_item(obs_data_t *request_data, obs_data_t *r
 		ok = vc->set_item_visible(name, obs_data_get_bool(request_data, "visible")) && ok;
 	if (obs_data_has_user_value(request_data, "audio_enabled"))
 		ok = vc->set_item_audio_enabled(name, obs_data_get_bool(request_data, "audio_enabled")) && ok;
+	if (obs_data_has_user_value(request_data, "hide_horizontal"))
+		ok = vc->set_item_hide_horizontal(name, obs_data_get_bool(request_data, "hide_horizontal")) && ok;
 	obs_data_set_bool(response_data, "success", ok);
 	obs_data_set_string(response_data, "source_name", name);
 	obs_data_set_bool(response_data, "visible", vc->item_visible(name));
 	obs_data_set_bool(response_data, "audio_enabled", vc->item_audio_enabled(name));
+	obs_data_set_bool(response_data, "hide_horizontal", vc->item_hide_horizontal(name));
 }
 
 
+
+
+void MsrController::ws_vertical_set_layout(obs_data_t *request_data, obs_data_t *response_data, void *priv)
+{
+	UNUSED_PARAMETER(priv);
+	obs_data_set_bool(response_data, "success", false);
+	const char *name = request_data ? obs_data_get_string(request_data, "source_name") : nullptr;
+	if (!name || !*name)
+		return;
+	auto *vc = MsrVerticalCanvas::instance();
+	if (!vc)
+		return;
+	const float x = (float)obs_data_get_double(request_data, "x");
+	const float y = (float)obs_data_get_double(request_data, "y");
+	const float bw = (float)obs_data_get_double(request_data, "bounds_w");
+	const float bh = (float)obs_data_get_double(request_data, "bounds_h");
+	int bt = (int)OBS_BOUNDS_SCALE_INNER;
+	if (obs_data_has_user_value(request_data, "bounds_type"))
+		bt = (int)obs_data_get_int(request_data, "bounds_type");
+	const bool ok = vc->set_item_layout(name, x, y, bw, bh, (obs_bounds_type)bt);
+	obs_data_set_bool(response_data, "success", ok);
+	obs_data_set_string(response_data, "source_name", name);
+}
 
 void MsrController::ws_vertical_fit(obs_data_t *request_data, obs_data_t *response_data, void *priv)
 {
@@ -1522,5 +1554,6 @@ void MsrController::register_websocket()
 	obs_websocket_vendor_register_request(ws_vendor_, "vertical_set_item", ws_vertical_set_item, this);
 	obs_websocket_vendor_register_request(ws_vendor_, "vertical_select", ws_vertical_select, this);
 	obs_websocket_vendor_register_request(ws_vendor_, "vertical_fit", ws_vertical_fit, this);
+	obs_websocket_vendor_register_request(ws_vendor_, "vertical_set_layout", ws_vertical_set_layout, this);
 	obs_log(LOG_INFO, "registered obs-websocket vendor obs-multi-source-record");
 }

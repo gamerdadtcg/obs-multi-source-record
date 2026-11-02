@@ -50,6 +50,9 @@ public:
 	bool create_scene(const std::string &scene_name);
 	bool add_existing_source(const std::string &source_name);
 	bool fit_source(const std::string &source_name);
+	/** Place item in vertical canvas with bounds box (OBS_BOUNDS_*). */
+	bool set_item_layout(const std::string &source_name, float x, float y, float bounds_w,
+			 float bounds_h, obs_bounds_type bounds = OBS_BOUNDS_SCALE_INNER);
 	bool stretch_source(const std::string &source_name);
 	bool center_source(const std::string &source_name);
 	bool reset_source_transform(const std::string &source_name);

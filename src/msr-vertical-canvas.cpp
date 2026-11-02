@@ -527,6 +527,33 @@ bool MsrVerticalCanvas::add_existing_source(const std::string &source_name)
 	return true;
 }
 
+
+bool MsrVerticalCanvas::set_item_layout(const std::string &source_name, float x, float y, float bounds_w,
+				       float bounds_h, obs_bounds_type bounds)
+{
+	obs_scene_t *scene = program_scene();
+	if (!scene)
+		return false;
+	obs_sceneitem_t *item = find_item_by_name(scene, source_name);
+	if (!item) {
+		obs_scene_release(scene);
+		return false;
+	}
+	obs_sceneitem_set_bounds_type(item, bounds);
+	obs_sceneitem_set_bounds_alignment(item, OBS_ALIGN_CENTER);
+	obs_sceneitem_set_alignment(item, OBS_ALIGN_TOP | OBS_ALIGN_LEFT);
+	vec2 b;
+	vec2_set(&b, bounds_w, bounds_h);
+	obs_sceneitem_set_bounds(item, &b);
+	vec2 pos;
+	vec2_set(&pos, x, y);
+	obs_sceneitem_set_pos(item, &pos);
+	obs_scene_release(scene);
+	obs_log(LOG_INFO, "vertical layout '%s' -> (%.0f,%.0f) %.0fx%.0f bounds=%d", source_name.c_str(), x, y,
+		bounds_w, bounds_h, (int)bounds);
+	return true;
+}
+
 bool MsrVerticalCanvas::fit_source(const std::string &source_name)
 {
 	obs_scene_t *scene = program_scene();
