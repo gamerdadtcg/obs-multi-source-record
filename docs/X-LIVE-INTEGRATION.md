@@ -1,6 +1,6 @@
 # X Live from MSR dock — research & plan (Step 1)
 
-**Status:** research complete; scaffolding on `feat/x-live-dock` @ `cce15bb`; draft PR #1 CI green (Windows/macOS/Ubuntu + format).  
+**Status:** BYOK Client ID + PKCE OAuth, sync source → destination, Go Live/End, 60s live-only status poll, chat send + post-END history implemented on `feat/x-live-dock` (rebased onto `feat/source-record-toggle`). See `docs/X-LIVE-SETUP.md`.  
 **Do not** install on Travis’s PC or Go Live from this work.
 
 Sources: [X Livestream API docs](https://github.com/xdevplatform/docs/tree/main/livestream-api) (2026), OAuth 2.0 PKCE guide, and Grok Bot `user-X` MCP livestream tools / `x-api-mcp-guide`.

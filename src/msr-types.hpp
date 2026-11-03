@@ -84,6 +84,10 @@ struct MsrSettings {
 	/** Sources whose Source Record filter is toggled by Record All Sources.
 	 *  Empty = auto-discover every source that already has source_record_filter. */
 	std::vector<std::string> source_record_sources;
+	/** Bring-your-own X OAuth Client ID (public for Native App; not a secret). */
+	std::string x_live_client_id;
+	/** Cached X Livestream source id (equals stream key — never log). */
+	std::string x_live_source_id;
 };
 
 inline const char *orientation_token(MsrOrientation o)

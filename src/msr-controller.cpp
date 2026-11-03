@@ -186,6 +186,17 @@ void MsrController::load_settings()
 		obs_data_array_release(sr_arr);
 	}
 
+	if (obs_data_has_user_value(data, "x_live_client_id")) {
+		const char *cid = obs_data_get_string(data, "x_live_client_id");
+		if (cid)
+			settings_.x_live_client_id = cid;
+	}
+	if (obs_data_has_user_value(data, "x_live_source_id")) {
+		const char *sid = obs_data_get_string(data, "x_live_source_id");
+		if (sid)
+			settings_.x_live_source_id = sid; /* never log */
+	}
+
 	obs_data_array_t *arr = obs_data_get_array(data, "sources");
 	if (arr) {
 		const size_t n = obs_data_array_count(arr);
@@ -331,6 +342,9 @@ void MsrController::save_settings()
 	}
 	obs_data_set_array(data, "source_record_sources", sr_out);
 	obs_data_array_release(sr_out);
+
+	obs_data_set_string(data, "x_live_client_id", settings_.x_live_client_id.c_str());
+	obs_data_set_string(data, "x_live_source_id", settings_.x_live_source_id.c_str()); /* never log */
 
 	const char *json = obs_data_get_json(data);
 	std::ofstream out(settings_path(), std::ios::trunc);

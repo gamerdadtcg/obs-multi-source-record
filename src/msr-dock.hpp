@@ -19,6 +19,7 @@ class QVBoxLayout;
 class QCheckBox;
 class QComboBox;
 class QLineEdit;
+class QPlainTextEdit;
 class QPushButton;
 class QLabel;
 class QSpinBox;
@@ -72,6 +73,11 @@ public slots:
 	void on_x_live_sign_in();
 	void on_x_live_sign_out();
 	void on_x_live_sync_source();
+	void on_x_live_go_live();
+	void on_x_live_end();
+	void on_x_live_send_chat();
+	void on_x_live_load_chat_history();
+	void on_x_live_status_changed();
 
 protected:
 	void showEvent(QShowEvent *event) override;
@@ -147,7 +153,17 @@ private:
 	QPushButton *x_live_signin_btn_ = nullptr;
 	QPushButton *x_live_signout_btn_ = nullptr;
 	QPushButton *x_live_sync_btn_ = nullptr;
-	std::unique_ptr<MsrXLiveClient> x_live_;
+	QPushButton *x_live_golive_btn_ = nullptr;
+	QPushButton *x_live_end_btn_ = nullptr;
+	QLineEdit *x_live_chat_edit_ = nullptr;
+	QPushButton *x_live_send_chat_btn_ = nullptr;
+	QPushButton *x_live_chat_hist_btn_ = nullptr;
+	QPlainTextEdit *x_live_chat_view_ = nullptr;
+	MsrXLiveClient *x_live_ = nullptr;
+
+	void ensure_x_live();
+	void apply_x_live_to_destination(const std::string &rtmps_url, const std::string &stream_key);
+	void persist_x_live_settings();
 
 	static QString format_elapsed(qint64 elapsed_ms);
 	void sync_elapsed_anchors();
