@@ -52,6 +52,7 @@ static void frontend_event(enum obs_frontend_event event, void *)
 		if (auto *vc = MsrVerticalCanvas::instance()) {
 			auto s = c->settings();
 			vc->ensure((uint32_t)s.vertical_width, (uint32_t)s.vertical_height);
+			vc->set_transition_ms(s.vertical_transition_ms);
 			vc->follow_main_scene();
 		}
 		if (preview_dock)
@@ -62,6 +63,7 @@ static void frontend_event(enum obs_frontend_event event, void *)
 		if (auto *vc = MsrVerticalCanvas::instance()) {
 			auto s = c->settings();
 			vc->ensure((uint32_t)s.vertical_width, (uint32_t)s.vertical_height);
+			vc->set_transition_ms(s.vertical_transition_ms);
 			vc->follow_main_scene();
 		}
 		if (preview_dock)

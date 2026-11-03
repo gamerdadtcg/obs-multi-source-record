@@ -65,6 +65,8 @@ struct MsrSettings {
 	int audio_bitrate_kbps = 160;
 	int vertical_width = 1080;
 	int vertical_height = 1920;
+	/** Fade duration (ms) when MSR vertical canvas switches scenes. Horizontal OBS transition unchanged. */
+	int vertical_transition_ms = 300;
 	/** When not Off, MSR recording follows OBS main record and/or stream start/stop. Default Off. */
 	MsrAutoStartTrigger auto_start = MsrAutoStartTrigger::Off;
 	/** Legacy/master: true if any source has replay_enabled (kept for status/configure compat). */

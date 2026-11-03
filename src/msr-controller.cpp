@@ -139,6 +139,8 @@ void MsrController::load_settings()
 		settings_.vertical_width = (int)obs_data_get_int(data, "vertical_width");
 	if (obs_data_has_user_value(data, "vertical_height"))
 		settings_.vertical_height = (int)obs_data_get_int(data, "vertical_height");
+	if (obs_data_has_user_value(data, "vertical_transition_ms"))
+		settings_.vertical_transition_ms = (int)obs_data_get_int(data, "vertical_transition_ms");
 	settings_.auto_start = parse_auto_start_token(obs_data_get_string(data, "auto_start"),
 						      (int)obs_data_get_int(data, "auto_start_code"));
 	if (obs_data_has_user_value(data, "replay_enabled"))
@@ -242,6 +244,7 @@ void MsrController::save_settings()
 	obs_data_set_int(data, "audio_bitrate_kbps", settings_.audio_bitrate_kbps);
 	obs_data_set_int(data, "vertical_width", settings_.vertical_width);
 	obs_data_set_int(data, "vertical_height", settings_.vertical_height);
+	obs_data_set_int(data, "vertical_transition_ms", settings_.vertical_transition_ms);
 	settings_.replay_enabled = false;
 	for (const auto &cfg : settings_.sources) {
 		if (cfg.replay_enabled) {
@@ -1066,6 +1069,7 @@ void MsrController::ws_get_settings(obs_data_t *request_data, obs_data_t *respon
 	obs_data_set_int(response_data, "audio_bitrate_kbps", s.audio_bitrate_kbps);
 	obs_data_set_int(response_data, "vertical_width", s.vertical_width);
 	obs_data_set_int(response_data, "vertical_height", s.vertical_height);
+	obs_data_set_int(response_data, "vertical_transition_ms", s.vertical_transition_ms);
 	obs_data_set_string(response_data, "auto_start", auto_start_token(s.auto_start));
 	obs_data_set_bool(response_data, "replay_enabled", s.replay_enabled);
 	obs_data_set_int(response_data, "replay_seconds", s.replay_seconds);
@@ -1151,6 +1155,8 @@ void MsrController::ws_configure(obs_data_t *request_data, obs_data_t *response_
 		s.vertical_width = (int)obs_data_get_int(request_data, "vertical_width");
 	if (obs_data_has_user_value(request_data, "vertical_height"))
 		s.vertical_height = (int)obs_data_get_int(request_data, "vertical_height");
+	if (obs_data_has_user_value(request_data, "vertical_transition_ms"))
+		s.vertical_transition_ms = (int)obs_data_get_int(request_data, "vertical_transition_ms");
 	if (obs_data_has_user_value(request_data, "auto_start"))
 		s.auto_start = parse_auto_start_token(obs_data_get_string(request_data, "auto_start"),
 						      (int)obs_data_get_int(request_data, "auto_start"));
@@ -1260,6 +1266,8 @@ void MsrController::ws_configure(obs_data_t *request_data, obs_data_t *response_
 	}
 
 	self->set_settings(s);
+	if (auto *vc = MsrVerticalCanvas::instance())
+		vc->set_transition_ms(s.vertical_transition_ms);
 	obs_data_set_bool(response_data, "success", true);
 	obs_data_set_bool(response_data, "recording", self->recording());
 	obs_data_set_bool(response_data, "streaming", self->streaming());
@@ -1358,6 +1366,7 @@ void MsrController::ws_vertical_status(obs_data_t *request_data, obs_data_t *res
 	obs_data_set_int(response_data, "width", vc->width());
 	obs_data_set_int(response_data, "height", vc->height());
 	obs_data_set_string(response_data, "followed_scene", vc->followed_scene_name().c_str());
+	obs_data_set_int(response_data, "transition_ms", vc->transition_ms());
 	obs_data_array_t *scenes = obs_data_array_create();
 	for (const auto &n : vc->list_scenes()) {
 		obs_data_t *item = obs_data_create();

@@ -43,6 +43,12 @@ MsrVerticalCanvas::~MsrVerticalCanvas()
 	detach_main_signals();
 	audio_mix_.shutdown();
 	std::lock_guard<std::mutex> lock(mutex_);
+	if (transition_) {
+		if (canvas_)
+			obs_canvas_set_channel(canvas_, 0, nullptr);
+		obs_source_release(transition_);
+		transition_ = nullptr;
+	}
 	if (canvas_) {
 		/* Leave the canvas in OBS so Travis keeps his vertical scenes. */
 		obs_canvas_release(canvas_);
@@ -60,12 +66,6 @@ bool MsrVerticalCanvas::ensure_default_scene(obs_canvas_t *canvas)
 	if (!canvas)
 		return false;
 
-	obs_source_t *existing = obs_canvas_get_channel(canvas, 0);
-	if (existing) {
-		obs_source_release(existing);
-		return true;
-	}
-
 	obs_scene_t *scene = obs_canvas_get_scene_by_name(canvas, kDefaultSceneName);
 	if (!scene)
 		scene = obs_canvas_scene_create(canvas, kDefaultSceneName);
@@ -74,10 +74,16 @@ bool MsrVerticalCanvas::ensure_default_scene(obs_canvas_t *canvas)
 		return false;
 	}
 
+	if (!ensure_transition_locked()) {
+		obs_scene_release(scene);
+		return false;
+	}
 	obs_source_t *ss = obs_scene_get_source(scene);
-	obs_canvas_set_channel(canvas, 0, ss);
+	show_scene_locked(ss, false);
+	if (followed_name_.empty())
+		followed_name_ = kDefaultSceneName;
 	obs_scene_release(scene);
-	obs_log(LOG_INFO, "vertical canvas default scene '%s' is program", kDefaultSceneName);
+	obs_log(LOG_INFO, "vertical canvas default scene '%s' is program (fade ready)", kDefaultSceneName);
 	return true;
 }
 
@@ -182,6 +188,12 @@ obs_scene_t *MsrVerticalCanvas::program_scene()
 	std::lock_guard<std::mutex> lock(mutex_);
 	if (!canvas_)
 		return nullptr;
+	/* Channel 0 may be the fade transition — resolve the followed scene by name. */
+	if (!followed_name_.empty()) {
+		obs_scene_t *by_name = obs_canvas_get_scene_by_name(canvas_, followed_name_.c_str());
+		if (by_name)
+			return by_name;
+	}
 	obs_source_t *src = obs_canvas_get_channel(canvas_, 0);
 	if (!src)
 		return nullptr;
@@ -299,10 +311,16 @@ bool MsrVerticalCanvas::set_program_scene(const std::string &scene_name)
 	obs_scene_t *scene = obs_canvas_get_scene_by_name(canvas_, scene_name.c_str());
 	if (!scene)
 		return false;
-	obs_canvas_set_channel(canvas_, 0, obs_scene_get_source(scene));
-	obs_scene_release(scene);
+	if (!ensure_transition_locked()) {
+		obs_scene_release(scene);
+		return false;
+	}
+	const bool animate = (!followed_name_.empty() && followed_name_ != scene_name);
+	show_scene_locked(obs_scene_get_source(scene), animate);
 	followed_name_ = scene_name;
-	obs_log(LOG_INFO, "vertical program scene set to '%s'", scene_name.c_str());
+	obs_scene_release(scene);
+	obs_log(LOG_INFO, "vertical program scene set to '%s' (fade=%s %dms)", scene_name.c_str(),
+		animate ? "yes" : "no", transition_ms_);
 	return true;
 }
 
@@ -481,7 +499,13 @@ bool MsrVerticalCanvas::follow_main_scene()
 		}
 
 		sync_from_main(main_scene, vert);
-		obs_canvas_set_channel(canvas_, 0, obs_scene_get_source(vert));
+		if (!ensure_transition_locked()) {
+			obs_scene_release(vert);
+			obs_source_release(main_src);
+			return false;
+		}
+		const bool animate = (!followed_name_.empty() && followed_name_ != name);
+		show_scene_locked(obs_scene_get_source(vert), animate);
 		followed_name_ = name;
 		obs_scene_release(vert);
 	}
@@ -943,3 +967,59 @@ void MsrVerticalCanvas::rebuild_audio_mix()
 	if (scene)
 		obs_scene_release(scene);
 }
+
+void MsrVerticalCanvas::set_transition_ms(int ms)
+{
+	if (ms < 0)
+		ms = 0;
+	if (ms > 5000)
+		ms = 5000;
+	std::lock_guard<std::mutex> lock(mutex_);
+	transition_ms_ = ms;
+	obs_log(LOG_INFO, "vertical fade duration set to %d ms", transition_ms_);
+}
+
+int MsrVerticalCanvas::transition_ms() const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	return transition_ms_;
+}
+
+bool MsrVerticalCanvas::ensure_transition_locked()
+{
+	if (!canvas_)
+		return false;
+	if (transition_) {
+		obs_source_t *ch0 = obs_canvas_get_channel(canvas_, 0);
+		if (ch0 != transition_)
+			obs_canvas_set_channel(canvas_, 0, transition_);
+		if (ch0)
+			obs_source_release(ch0);
+		obs_transition_set_size(transition_, width_ ? width_ : 1080, height_ ? height_ : 1920);
+		return true;
+	}
+
+	transition_ = obs_source_create_private("fade_transition", "MSR Vertical Fade", nullptr);
+	if (!transition_) {
+		obs_log(LOG_ERROR, "failed to create vertical fade_transition");
+		return false;
+	}
+	obs_transition_set_size(transition_, width_ ? width_ : 1080, height_ ? height_ : 1920);
+	obs_transition_set_alignment(transition_, OBS_ALIGN_CENTER);
+	obs_transition_set_scale_type(transition_, OBS_TRANSITION_SCALE_ASPECT);
+	obs_canvas_set_channel(canvas_, 0, transition_);
+	obs_log(LOG_INFO, "vertical canvas using private fade_transition (%d ms)", transition_ms_);
+	return true;
+}
+
+void MsrVerticalCanvas::show_scene_locked(obs_source_t *scene_source, bool animate)
+{
+	if (!scene_source || !transition_)
+		return;
+	if (!animate || transition_ms_ <= 0) {
+		obs_transition_set(transition_, scene_source);
+		return;
+	}
+	obs_transition_start(transition_, OBS_TRANSITION_MODE_AUTO, (uint32_t)transition_ms_, scene_source);
+}
+

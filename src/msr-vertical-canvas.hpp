@@ -44,6 +44,8 @@ public:
 
 	bool follow_main_scene();
 	std::string followed_scene_name() const;
+	void set_transition_ms(int ms);
+	int transition_ms() const;
 
 	std::vector<std::string> list_scenes();
 	bool set_program_scene(const std::string &scene_name);
@@ -91,6 +93,8 @@ private:
 	bool sync_from_main(obs_scene_t *main_scene, obs_scene_t *vert_scene);
 	void attach_main_signals(obs_source_t *main_scene_source);
 	void detach_main_signals();
+	bool ensure_transition_locked();
+	void show_scene_locked(obs_source_t *scene_source, bool animate);
 
 	static void on_main_item_add(void *data, calldata_t *cd);
 	static void on_main_item_remove(void *data, calldata_t *cd);
@@ -105,6 +109,8 @@ private:
 	uint32_t height_ = 0;
 	std::string followed_name_;
 	obs_source_t *main_signal_source_ = nullptr;
+	obs_source_t *transition_ = nullptr; /* private fade_transition on canvas ch0 */
+	int transition_ms_ = 300;
 	MsrVerticalAudioMix audio_mix_;
 	std::atomic_bool applying_hide_horizontal_{false};
 	static MsrVerticalCanvas *instance_;
