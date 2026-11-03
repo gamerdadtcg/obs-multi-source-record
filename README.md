@@ -150,8 +150,8 @@ For local tests use MediaMTX (`rtmp://127.0.0.1:1935/...`). Do not point agent t
    ```
 
 4. Restart Stream Deck.
-5. Add **Multi Source Record Toggle**, **Pause**, **Chapter**, and/or **Save Replay**. Set host/port/password to match **OBS → Tools → WebSocket Server Settings**.
-6. Toggle: idle = not recording; red = recording. Pause: recording vs paused. Chapter: marks all active outputs. Save Replay: dumps every active replay buffer.
+5. Add **Multi Source Record Toggle**, **Pause**, **Chapter**, **Save Replay**, and/or **Source Record**. Set host/port/password to match **OBS → Tools → WebSocket Server Settings**.
+6. Toggle: idle = not recording; red = recording. Pause: recording vs paused. Chapter: marks all active outputs. Save Replay: dumps every active replay buffer. Source Record: enables/disables Source Record filters on configured sources.
 
 ### Option B — any websocket tool / Multi Action
 
@@ -160,13 +160,23 @@ Call obs-websocket 5 **CallVendorRequest**:
 | Field | Value |
 | --- | --- |
 | vendorName | `obs-multi-source-record` |
-| requestType | `start` / `stop` / `toggle` / `status` / `pause` / `resume` / `toggle_pause` / `add_chapter` / `save_replay` / `start_replay` / `stop_replay` / `configure` / `get_settings` / `start_stream` / `stop_stream` / `toggle_stream` |
+| requestType | `start` / `stop` / `toggle` / `status` / `pause` / `resume` / `toggle_pause` / `add_chapter` / `save_replay` / `start_replay` / `stop_replay` / `configure` / `get_settings` / `start_stream` / `stop_stream` / `toggle_stream` / `source_record_status` / `start_source_record` / `stop_source_record` / `toggle_source_record` |
 
 `add_chapter` accepts optional `requestData.name`. Without a name, chapters are auto-numbered (`Chapter 1`, …).
 
-`configure` accepts `auto_start` (`off`/`record`/`stream`/`both`), `replay_enabled`, `replay_seconds`, `split_mode` (`off`/`time`/`size`), `split_time_min`, `split_size_mb`, plus the existing source/destination fields.
+`configure` accepts `auto_start` (`off`/`record`/`stream`/`both`), `replay_enabled`, `replay_seconds`, `split_mode` (`off`/`time`/`size`), `split_time_min`, `split_size_mb`, `source_record_filter`, `source_record_sources` (array of `{ "source_name": "…" }`), plus the existing source/destination fields.
 
-Example `status` response data: `{ "success": true, "recording": true, "paused": false, "streaming": false, "replaying": true, "outputs": [...] }`.
+### Record All Sources (Source Record filters)
+
+Built-in toggle for Exeldro **Source Record** (or any filter with the same display name) on configured sources. Does **not** start MSR file outputs or OBS main recording.
+
+- Dock button **Record All Sources** + status line
+- Hotkey: **Multi Source Record: Record All Sources (Source Record filters)**
+- Vendor: `toggle_source_record` / `start_source_record` / `stop_source_record` / `source_record_status`
+- Settings: `source_record_filter` (default `"Source Record"`), `source_record_sources` (empty = auto-discover every source that already has that filter)
+- Stream Deck: action **Multi Source Record Source Record** (or CallVendorRequest `toggle_source_record`)
+
+Example `status` response data: `{ "success": true, "recording": true, "paused": false, "streaming": false, "replaying": true, "source_recording": false, "outputs": [...] }`.
 
 ## Building from source
 

@@ -13,17 +13,20 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QWidget>
 #include <QPointer>
 #include <vector>
+#include <memory>
 
 class QVBoxLayout;
 class QCheckBox;
 class QComboBox;
 class QLineEdit;
+class QPlainTextEdit;
 class QPushButton;
 class QLabel;
 class QSpinBox;
 class QTimer;
 class QToolButton;
 class QScrollArea;
+class MsrXLiveClient;
 
 struct MsrSourceRow {
 	QCheckBox *enabled = nullptr;
@@ -62,9 +65,19 @@ public slots:
 	void on_remove_destination();
 	void on_save_replay();
 	void on_start_stop_clipping();
+	void on_toggle_source_record();
 	void update_recording_state(bool recording);
+	void update_source_record_state(bool active);
 	void on_split_mode_changed(int index);
 	void refresh_status_labels();
+	void on_x_live_sign_in();
+	void on_x_live_sign_out();
+	void on_x_live_sync_source();
+	void on_x_live_go_live();
+	void on_x_live_end();
+	void on_x_live_send_chat();
+	void on_x_live_load_chat_history();
+	void on_x_live_status_changed();
 
 protected:
 	void showEvent(QShowEvent *event) override;
@@ -117,7 +130,11 @@ private:
 	QPushButton *replay_btn_ = nullptr;
 	QPushButton *clipping_btn_ = nullptr;
 	QPushButton *stream_btn_ = nullptr;
+	QPushButton *source_record_btn_ = nullptr;
+	QLineEdit *source_record_filter_edit_ = nullptr;
+	QLineEdit *source_record_sources_edit_ = nullptr;
 	QLabel *status_label_ = nullptr;
+	QLabel *source_record_status_label_ = nullptr;
 	QLabel *stream_status_label_ = nullptr;
 	QLabel *replay_status_label_ = nullptr;
 	QTimer *status_timer_ = nullptr;
@@ -129,6 +146,24 @@ private:
 	bool was_replaying_ = false;
 	QWidget *advanced_box_ = nullptr;
 	QWidget *multistream_box_ = nullptr;
+	QWidget *x_live_box_ = nullptr;
+	QLineEdit *x_live_client_id_ = nullptr;
+	QLineEdit *x_live_title_ = nullptr;
+	QLabel *x_live_status_ = nullptr;
+	QPushButton *x_live_signin_btn_ = nullptr;
+	QPushButton *x_live_signout_btn_ = nullptr;
+	QPushButton *x_live_sync_btn_ = nullptr;
+	QPushButton *x_live_golive_btn_ = nullptr;
+	QPushButton *x_live_end_btn_ = nullptr;
+	QLineEdit *x_live_chat_edit_ = nullptr;
+	QPushButton *x_live_send_chat_btn_ = nullptr;
+	QPushButton *x_live_chat_hist_btn_ = nullptr;
+	QPlainTextEdit *x_live_chat_view_ = nullptr;
+	MsrXLiveClient *x_live_ = nullptr;
+
+	void ensure_x_live();
+	void apply_x_live_to_destination(const std::string &rtmps_url, const std::string &stream_key);
+	void persist_x_live_settings();
 
 	static QString format_elapsed(qint64 elapsed_ms);
 	void sync_elapsed_anchors();

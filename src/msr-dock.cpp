@@ -9,6 +9,7 @@ the Free Software Foundation; either version 2 of the License, or
 */
 
 #include "msr-dock.hpp"
+#include "msr-x-live.hpp"
 #include "msr-controller.hpp"
 #include "plugin-support.h"
 
@@ -21,6 +22,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QCheckBox>
 #include <QComboBox>
 #include <QLineEdit>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QLabel>
 #include <QSpinBox>
@@ -40,6 +42,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QDateTime>
 
 #include <string>
+#include <memory>
 
 namespace {
 
@@ -63,7 +66,6 @@ bool enum_sources_cb(void *data, obs_source_t *source)
 	return true;
 }
 
-
 struct SectionWidgets {
 	QWidget *section = nullptr;
 	QToolButton *toggle = nullptr;
@@ -84,9 +86,9 @@ SectionWidgets make_collapsible(QWidget *parent, const QString &title, bool defa
 	sw.toggle->setCheckable(true);
 	sw.toggle->setChecked(default_open);
 	sw.toggle->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-	sw.toggle->setStyleSheet(QStringLiteral(
-		"QToolButton { border: none; font-weight: 600; text-align: left; padding: 4px 2px; }"
-		"QToolButton:hover { background: rgba(127,127,127,40); }"));
+	sw.toggle->setStyleSheet(
+		QStringLiteral("QToolButton { border: none; font-weight: 600; text-align: left; padding: 4px 2px; }"
+			       "QToolButton:hover { background: rgba(127,127,127,40); }"));
 	auto set_header = [toggle = sw.toggle, title](bool on) {
 		toggle->setText(QStringLiteral("%1  %2").arg(on ? QStringLiteral("▾") : QStringLiteral("▸"), title));
 	};
@@ -100,11 +102,10 @@ SectionWidgets make_collapsible(QWidget *parent, const QString &title, bool defa
 	body_l->setSpacing(6);
 	vl->addWidget(sw.body);
 
-	QObject::connect(sw.toggle, &QToolButton::toggled, sw.section,
-			 [set_header, body = sw.body](bool on) {
-				 body->setVisible(on);
-				 set_header(on);
-			 });
+	QObject::connect(sw.toggle, &QToolButton::toggled, sw.section, [set_header, body = sw.body](bool on) {
+		body->setVisible(on);
+		set_header(on);
+	});
 	return sw;
 }
 
@@ -123,15 +124,22 @@ MsrDock::MsrDock(QWidget *parent) : QWidget(parent)
 			QMetaObject::invokeMethod(this, "update_recording_state", Qt::QueuedConnection,
 						  Q_ARG(bool, recording));
 		});
+		c->set_source_record_state_callback([this](bool active) {
+			QMetaObject::invokeMethod(this, "update_source_record_state", Qt::QueuedConnection,
+						  Q_ARG(bool, active));
+		});
 		update_recording_state(c->recording());
+		update_source_record_state(c->source_recording());
 	}
 	refresh_status_labels();
 }
 
 MsrDock::~MsrDock()
 {
-	if (auto *c = MsrController::instance())
+	if (auto *c = MsrController::instance()) {
 		c->set_state_callback(nullptr);
+		c->set_source_record_state_callback(nullptr);
+	}
 }
 
 void MsrDock::build_ui()
@@ -169,7 +177,7 @@ void MsrDock::build_ui()
 	root->addWidget(hint);
 
 	auto add_section = [this, content, root](const QString &title, const char *key,
-						bool default_open) -> QWidget * {
+						 bool default_open) -> QWidget * {
 		SectionWidgets sw = make_collapsible(content, title, default_open);
 		sections_.push_back(SectionRef{sw.toggle, sw.body, key, default_open});
 		root->addWidget(sw.section);
@@ -177,8 +185,7 @@ void MsrDock::build_ui()
 	};
 
 	/* Sources — default open */
-	auto *sources_body = add_section(QString::fromUtf8(obs_module_text("VerticalSources")), "SectionSources",
-					 true);
+	auto *sources_body = add_section(QString::fromUtf8(obs_module_text("VerticalSources")), "SectionSources", true);
 	auto *sources_l = qobject_cast<QVBoxLayout *>(sources_body->layout());
 	source_scroll_ = new QScrollArea(sources_body);
 	source_scroll_->setWidgetResizable(true);
@@ -220,8 +227,8 @@ void MsrDock::build_ui()
 	output_l->addLayout(fmt_row);
 
 	/* Recording options — default closed */
-	auto *opts_body = add_section(QString::fromUtf8(obs_module_text("RecordingOptions")), "SectionRecording",
-				      false);
+	auto *opts_body =
+		add_section(QString::fromUtf8(obs_module_text("RecordingOptions")), "SectionRecording", false);
 	auto *opts_l = qobject_cast<QVBoxLayout *>(opts_body->layout());
 	auto_start_combo_ = new QComboBox(opts_body);
 	auto_start_combo_->addItem(QString::fromUtf8(obs_module_text("AutoStartOff")), (int)MsrAutoStartTrigger::Off);
@@ -258,6 +265,22 @@ void MsrDock::build_ui()
 	split_row->addWidget(split_size_mb_);
 	split_row->addStretch(1);
 	opts_l->addLayout(split_row);
+
+	auto *sr_sep = new QLabel(QString::fromUtf8(obs_module_text("SourceRecordSection")), opts_body);
+	sr_sep->setStyleSheet(QStringLiteral("font-weight: 600; margin-top: 6px;"));
+	opts_l->addWidget(sr_sep);
+	auto *sr_hint = new QLabel(QString::fromUtf8(obs_module_text("SourceRecordHint")), opts_body);
+	sr_hint->setWordWrap(true);
+	opts_l->addWidget(sr_hint);
+	opts_l->addWidget(new QLabel(QString::fromUtf8(obs_module_text("SourceRecordFilter")), opts_body));
+	source_record_filter_edit_ = new QLineEdit(opts_body);
+	source_record_filter_edit_->setPlaceholderText(QStringLiteral("Source Record"));
+	opts_l->addWidget(source_record_filter_edit_);
+	opts_l->addWidget(new QLabel(QString::fromUtf8(obs_module_text("SourceRecordSources")), opts_body));
+	source_record_sources_edit_ = new QLineEdit(opts_body);
+	source_record_sources_edit_->setPlaceholderText(
+		QString::fromUtf8(obs_module_text("SourceRecordSourcesPlaceholder")));
+	opts_l->addWidget(source_record_sources_edit_);
 
 	/* Clipping (replay buffer) — default closed */
 	auto *replay_body = add_section(QString::fromUtf8(obs_module_text("ReplayBuffer")), "SectionReplay", false);
@@ -329,6 +352,68 @@ void MsrDock::build_ui()
 	stream_status_label_->setWordWrap(true);
 	ms->addWidget(stream_status_label_);
 
+	/* X Live — BYOK Client ID + PKCE; Go Live / End only on explicit click */
+	x_live_box_ = add_section(QString::fromUtf8(obs_module_text("XLiveSection")), "SectionXLive", false);
+	auto *xl = qobject_cast<QVBoxLayout *>(x_live_box_->layout());
+	auto *xl_hint = new QLabel(QString::fromUtf8(obs_module_text("XLiveHint")), x_live_box_);
+	xl_hint->setWordWrap(true);
+	xl->addWidget(xl_hint);
+	xl->addWidget(new QLabel(QString::fromUtf8(obs_module_text("XLiveClientId")), x_live_box_));
+	x_live_client_id_ = new QLineEdit(x_live_box_);
+	x_live_client_id_->setPlaceholderText(QString::fromUtf8(obs_module_text("XLiveClientId")));
+	/* Client ID is public for Native App — not a secret; Normal echo */
+	x_live_client_id_->setEchoMode(QLineEdit::Normal);
+	xl->addWidget(x_live_client_id_);
+	xl->addWidget(new QLabel(QString::fromUtf8(obs_module_text("XLiveTitle")), x_live_box_));
+	x_live_title_ = new QLineEdit(x_live_box_);
+	x_live_title_->setPlaceholderText(QString::fromUtf8(obs_module_text("XLiveTitle")));
+	xl->addWidget(x_live_title_);
+	auto *xl_btns = new QHBoxLayout();
+	x_live_signin_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("XLiveSignIn")), x_live_box_);
+	x_live_signout_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("XLiveSignOut")), x_live_box_);
+	xl_btns->addWidget(x_live_signin_btn_);
+	xl_btns->addWidget(x_live_signout_btn_);
+	xl->addLayout(xl_btns);
+	x_live_sync_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("XLiveSyncSource")), x_live_box_);
+	xl->addWidget(x_live_sync_btn_);
+	auto *xl_live_btns = new QHBoxLayout();
+	x_live_golive_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("XLiveGoLive")), x_live_box_);
+	x_live_end_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("XLiveEnd")), x_live_box_);
+	xl_live_btns->addWidget(x_live_golive_btn_);
+	xl_live_btns->addWidget(x_live_end_btn_);
+	xl->addLayout(xl_live_btns);
+	x_live_status_ = new QLabel(QString::fromUtf8(obs_module_text("XLiveStatus")), x_live_box_);
+	x_live_status_->setWordWrap(true);
+	xl->addWidget(x_live_status_);
+	auto *xl_chat_hint = new QLabel(QString::fromUtf8(obs_module_text("XLiveChatPlaceholder")), x_live_box_);
+	xl_chat_hint->setWordWrap(true);
+	xl_chat_hint->setStyleSheet(QStringLiteral("color: #888;"));
+	xl->addWidget(xl_chat_hint);
+	x_live_chat_edit_ = new QLineEdit(x_live_box_);
+	x_live_chat_edit_->setPlaceholderText(QString::fromUtf8(obs_module_text("XLiveSendChat")));
+	x_live_chat_edit_->setMaxLength(140);
+	xl->addWidget(x_live_chat_edit_);
+	auto *xl_chat_btns = new QHBoxLayout();
+	x_live_send_chat_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("XLiveSendChat")), x_live_box_);
+	x_live_chat_hist_btn_ =
+		new QPushButton(QString::fromUtf8(obs_module_text("XLiveLoadChatHistory")), x_live_box_);
+	xl_chat_btns->addWidget(x_live_send_chat_btn_);
+	xl_chat_btns->addWidget(x_live_chat_hist_btn_);
+	xl->addLayout(xl_chat_btns);
+	x_live_chat_view_ = new QPlainTextEdit(x_live_box_);
+	x_live_chat_view_->setReadOnly(true);
+	x_live_chat_view_->setMaximumBlockCount(500);
+	x_live_chat_view_->setPlaceholderText(QString::fromUtf8(obs_module_text("XLiveChatPlaceholder")));
+	xl->addWidget(x_live_chat_view_);
+	connect(x_live_signin_btn_, &QPushButton::clicked, this, &MsrDock::on_x_live_sign_in);
+	connect(x_live_signout_btn_, &QPushButton::clicked, this, &MsrDock::on_x_live_sign_out);
+	connect(x_live_sync_btn_, &QPushButton::clicked, this, &MsrDock::on_x_live_sync_source);
+	connect(x_live_golive_btn_, &QPushButton::clicked, this, &MsrDock::on_x_live_go_live);
+	connect(x_live_end_btn_, &QPushButton::clicked, this, &MsrDock::on_x_live_end);
+	connect(x_live_send_chat_btn_, &QPushButton::clicked, this, &MsrDock::on_x_live_send_chat);
+	connect(x_live_chat_hist_btn_, &QPushButton::clicked, this, &MsrDock::on_x_live_load_chat_history);
+	ensure_x_live();
+
 	root->addStretch(1);
 	outer_scroll_->setWidget(content);
 	outer->addWidget(outer_scroll_, 1);
@@ -359,9 +444,18 @@ void MsrDock::build_ui()
 	btn_row->addWidget(replay_btn_);
 	footer_l->addLayout(btn_row);
 
+	auto *sr_row = new QHBoxLayout();
+	source_record_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("StartSourceRecord")), footer);
+	connect(source_record_btn_, &QPushButton::clicked, this, &MsrDock::on_toggle_source_record);
+	sr_row->addWidget(source_record_btn_, 1);
+	footer_l->addLayout(sr_row);
+
 	status_label_ = new QLabel(QString::fromUtf8(obs_module_text("StatusIdle")), footer);
 	status_label_->setWordWrap(true);
 	footer_l->addWidget(status_label_);
+	source_record_status_label_ = new QLabel(QString::fromUtf8(obs_module_text("StatusSourceRecordIdle")), footer);
+	source_record_status_label_->setWordWrap(true);
+	footer_l->addWidget(source_record_status_label_);
 	replay_status_label_ = new QLabel(QString::fromUtf8(obs_module_text("StatusReplayIdle")), footer);
 	replay_status_label_->setWordWrap(true);
 	footer_l->addWidget(replay_status_label_);
@@ -590,6 +684,23 @@ void MsrDock::load_from_controller()
 		split_time_min_->setValue(s.split_time_min);
 	if (split_size_mb_)
 		split_size_mb_->setValue(s.split_size_mb);
+	if (source_record_filter_edit_)
+		source_record_filter_edit_->setText(QString::fromStdString(s.source_record_filter));
+	if (source_record_sources_edit_) {
+		QStringList names;
+		for (const auto &n : s.source_record_sources)
+			names << QString::fromStdString(n);
+		source_record_sources_edit_->setText(names.join(QStringLiteral(", ")));
+	}
+	if (x_live_client_id_)
+		x_live_client_id_->setText(QString::fromStdString(s.x_live_client_id));
+	ensure_x_live();
+	if (x_live_) {
+		x_live_->set_client_id(s.x_live_client_id);
+		x_live_->set_cached_source_id(s.x_live_source_id);
+		if (x_live_status_)
+			x_live_status_->setText(QString::fromStdString(x_live_->status_text()));
+	}
 	on_split_mode_changed(split_mode_combo_ ? split_mode_combo_->currentIndex() : 0);
 	rebuild_source_list();
 	rebuild_dest_list();
@@ -658,6 +769,24 @@ void MsrDock::apply_to_controller()
 		if (!d.name.empty())
 			s.destinations.push_back(d);
 	}
+	if (source_record_filter_edit_) {
+		const QString fn = source_record_filter_edit_->text().trimmed();
+		s.source_record_filter = fn.isEmpty() ? "Source Record" : fn.toStdString();
+	}
+	s.source_record_sources.clear();
+	if (source_record_sources_edit_) {
+		const QStringList parts =
+			source_record_sources_edit_->text().split(QLatin1Char(','), Qt::SkipEmptyParts);
+		for (QString part : parts) {
+			part = part.trimmed();
+			if (!part.isEmpty())
+				s.source_record_sources.push_back(part.toStdString());
+		}
+	}
+	if (x_live_client_id_)
+		s.x_live_client_id = x_live_client_id_->text().trimmed().toStdString();
+	if (x_live_)
+		s.x_live_source_id = x_live_->cached_source_id(); /* never log */
 	c->set_settings(s);
 }
 
@@ -719,10 +848,7 @@ QString MsrDock::format_elapsed(qint64 elapsed_ms)
 	const int h = int(total_sec / 3600);
 	const int m = int((total_sec % 3600) / 60);
 	const int s = int(total_sec % 60);
-	return QStringLiteral("%1:%2:%3")
-		.arg(h, 2, 10, QChar('0'))
-		.arg(m, 2, 10, QChar('0'))
-		.arg(s, 2, 10, QChar('0'));
+	return QStringLiteral("%1:%2:%3").arg(h, 2, 10, QChar('0')).arg(m, 2, 10, QChar('0')).arg(s, 2, 10, QChar('0'));
 }
 
 void MsrDock::sync_elapsed_anchors()
@@ -781,13 +907,13 @@ void MsrDock::refresh_status_labels()
 			if (elapsed_ms >= 10000 && frames == 0) {
 				stream_status_label_->setText(
 					QString::fromUtf8(obs_module_text("StatusStreamNoFrames")).arg(elapsed));
-				stream_status_label_->setStyleSheet(QStringLiteral("color: #e74c3c; font-weight: 600;"));
+				stream_status_label_->setStyleSheet(
+					QStringLiteral("color: #e74c3c; font-weight: 600;"));
 			} else {
 				stream_status_label_->setStyleSheet(QString());
-				stream_status_label_->setText(
-					QString::fromUtf8(obs_module_text("StatusStreaming"))
-						.arg(elapsed)
-						.arg(QString::number(frames)));
+				stream_status_label_->setText(QString::fromUtf8(obs_module_text("StatusStreaming"))
+								      .arg(elapsed)
+								      .arg(QString::number(frames)));
 			}
 		} else {
 			stream_status_label_->setStyleSheet(QString());
@@ -813,6 +939,26 @@ void MsrDock::refresh_status_labels()
 	if (stream_btn_) {
 		stream_btn_->setText(
 			QString::fromUtf8(obs_module_text(streaming ? "StopStreaming" : "StartStreaming")));
+	}
+
+	const bool source_rec = c && c->source_recording();
+	if (source_record_btn_) {
+		source_record_btn_->setText(
+			QString::fromUtf8(obs_module_text(source_rec ? "StopSourceRecord" : "StartSourceRecord")));
+	}
+	if (source_record_status_label_) {
+		if (source_rec) {
+			const auto targets = c->source_record_targets();
+			QStringList names;
+			for (const auto &n : targets)
+				names << QString::fromStdString(n);
+			source_record_status_label_->setText(
+				QString::fromUtf8(obs_module_text("StatusSourceRecordActive"))
+					.arg(names.isEmpty() ? QStringLiteral("…") : names.join(QStringLiteral(", "))));
+		} else {
+			source_record_status_label_->setText(
+				QString::fromUtf8(obs_module_text("StatusSourceRecordIdle")));
+		}
 	}
 }
 
@@ -849,7 +995,6 @@ void MsrDock::on_add_destination()
 	c->set_settings(s);
 	rebuild_dest_list();
 }
-
 
 void MsrDock::on_remove_destination()
 {
@@ -892,6 +1037,26 @@ void MsrDock::on_start_stop_clipping()
 		c->stop_replays();
 	else
 		c->start_replays();
+	refresh_status_labels();
+}
+
+void MsrDock::on_toggle_source_record()
+{
+	apply_to_controller();
+	auto *c = MsrController::instance();
+	if (!c)
+		return;
+	c->toggle_source_recording();
+	update_source_record_state(c->source_recording());
+	refresh_status_labels();
+}
+
+void MsrDock::update_source_record_state(bool active)
+{
+	if (source_record_btn_) {
+		source_record_btn_->setText(
+			QString::fromUtf8(obs_module_text(active ? "StopSourceRecord" : "StartSourceRecord")));
+	}
 	refresh_status_labels();
 }
 
@@ -988,4 +1153,172 @@ void MsrDock::hideEvent(QHideEvent *event)
 {
 	save_window_geometry();
 	QWidget::hideEvent(event);
+}
+
+void MsrDock::ensure_x_live()
+{
+	if (x_live_)
+		return;
+	x_live_ = new MsrXLiveClient(this);
+	char *tok = obs_module_config_path("x-live-tokens.json");
+	if (tok) {
+		x_live_->set_tokens_path(tok);
+		bfree(tok);
+	}
+	connect(x_live_, &MsrXLiveClient::statusChanged, this, &MsrDock::on_x_live_status_changed);
+	connect(x_live_, &MsrXLiveClient::chatHistoryReady, this, [this](QString text) {
+		if (x_live_chat_view_)
+			x_live_chat_view_->setPlainText(text);
+	});
+}
+
+void MsrDock::persist_x_live_settings()
+{
+	auto *c = MsrController::instance();
+	if (!c)
+		return;
+	MsrSettings s = c->settings();
+	if (x_live_client_id_)
+		s.x_live_client_id = x_live_client_id_->text().trimmed().toStdString();
+	if (x_live_)
+		s.x_live_source_id = x_live_->cached_source_id();
+	c->set_settings(s);
+}
+
+void MsrDock::apply_x_live_to_destination(const std::string &rtmps_url, const std::string &stream_key)
+{
+	/* Fill existing X destination without displaying the key in status. */
+	int target = -1;
+	for (int i = 0; i < (int)dest_rows_.size(); i++) {
+		const QString n = dest_rows_[i].name ? dest_rows_[i].name->text() : QString();
+		const QString srv = dest_rows_[i].server ? dest_rows_[i].server->text() : QString();
+		const QString nl = n.toLower();
+		if (nl.contains(QStringLiteral("x live")) || nl == QStringLiteral("x") ||
+		    nl.contains(QStringLiteral("twitter")) || nl.contains(QStringLiteral("pscp")) ||
+		    srv.contains(QStringLiteral("pscp.tv"), Qt::CaseInsensitive) ||
+		    srv.contains(QStringLiteral("x.com"), Qt::CaseInsensitive)) {
+			target = i;
+			break;
+		}
+	}
+	if (target < 0 && !dest_rows_.empty()) {
+		/* Prefer vertical dest named like travvvman / x */
+		for (int i = 0; i < (int)dest_rows_.size(); i++) {
+			const QString n = dest_rows_[i].name ? dest_rows_[i].name->text().toLower() : QString();
+			if (n.contains(QStringLiteral("travvv")) || n.contains(QStringLiteral("x"))) {
+				target = i;
+				break;
+			}
+		}
+	}
+	if (target < 0) {
+		/* Create a destination row via settings */
+		auto *c = MsrController::instance();
+		if (!c)
+			return;
+		MsrSettings s = c->settings();
+		MsrStreamDestination d;
+		d.name = "X Live";
+		d.enabled = false; /* user enables when ready — never auto Go Live */
+		d.orientation = MsrOrientation::Vertical;
+		d.server_url = rtmps_url;
+		d.stream_key = stream_key; /* never log */
+		s.destinations.push_back(d);
+		if (x_live_client_id_)
+			s.x_live_client_id = x_live_client_id_->text().trimmed().toStdString();
+		if (x_live_)
+			s.x_live_source_id = x_live_->cached_source_id();
+		c->set_settings(s);
+		rebuild_dest_list();
+		blog(LOG_INFO, "X Live: created destination 'X Live' (key hidden)");
+		return;
+	}
+	if (dest_rows_[target].server)
+		dest_rows_[target].server->setText(QString::fromStdString(rtmps_url));
+	if (dest_rows_[target].key) {
+		dest_rows_[target].key->setEchoMode(QLineEdit::Password);
+		dest_rows_[target].key->setText(QString::fromStdString(stream_key));
+	}
+	persist_x_live_settings();
+	apply_to_controller();
+	blog(LOG_INFO, "X Live: filled destination server (key_len=%zu, key never logged)", stream_key.size());
+}
+
+void MsrDock::on_x_live_status_changed()
+{
+	if (x_live_status_ && x_live_)
+		x_live_status_->setText(QString::fromStdString(x_live_->status_text()));
+}
+
+void MsrDock::on_x_live_sign_in()
+{
+	ensure_x_live();
+	const std::string cid = x_live_client_id_ ? x_live_client_id_->text().trimmed().toStdString() : "";
+	x_live_->set_client_id(cid);
+	persist_x_live_settings();
+	x_live_->begin_sign_in();
+	on_x_live_status_changed();
+}
+
+void MsrDock::on_x_live_sign_out()
+{
+	if (!x_live_)
+		return;
+	x_live_->sign_out();
+	on_x_live_status_changed();
+}
+
+void MsrDock::on_x_live_sync_source()
+{
+	ensure_x_live();
+	x_live_->set_client_id(x_live_client_id_ ? x_live_client_id_->text().trimmed().toStdString() : "");
+	std::string url;
+	std::string key;
+	if (!x_live_->sync_source("MSR OBS", &url, &key)) {
+		on_x_live_status_changed();
+		return;
+	}
+	if (!url.empty() && !key.empty())
+		apply_x_live_to_destination(url, key);
+	persist_x_live_settings();
+	on_x_live_status_changed();
+	if (x_live_status_ && !url.empty()) {
+		x_live_status_->setText(QString::fromStdString(x_live_->status_text()) +
+					QStringLiteral(" · destination updated (key hidden)"));
+	}
+}
+
+void MsrDock::on_x_live_go_live()
+{
+	ensure_x_live();
+	const std::string title = x_live_title_ ? x_live_title_->text().trimmed().toStdString() : "";
+	x_live_->go_live(title);
+	on_x_live_status_changed();
+}
+
+void MsrDock::on_x_live_end()
+{
+	if (!x_live_)
+		return;
+	x_live_->end_broadcast();
+	on_x_live_status_changed();
+}
+
+void MsrDock::on_x_live_send_chat()
+{
+	ensure_x_live();
+	const std::string text = x_live_chat_edit_ ? x_live_chat_edit_->text().trimmed().toStdString() : "";
+	if (x_live_->send_chat(text) && x_live_chat_edit_)
+		x_live_chat_edit_->clear();
+	on_x_live_status_changed();
+}
+
+void MsrDock::on_x_live_load_chat_history()
+{
+	ensure_x_live();
+	std::string hist;
+	x_live_->load_chat_history(&hist);
+	if (x_live_chat_view_ && !hist.empty())
+		x_live_chat_view_->setPlainText(QString::fromStdString(hist));
+	on_x_live_status_changed();
 }

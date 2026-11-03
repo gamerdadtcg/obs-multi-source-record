@@ -160,6 +160,43 @@ void MsrController::load_settings()
 	if (obs_data_has_user_value(data, "split_size_mb"))
 		settings_.split_size_mb = (int)obs_data_get_int(data, "split_size_mb");
 
+	if (obs_data_has_user_value(data, "source_record_filter")) {
+		const char *fn = obs_data_get_string(data, "source_record_filter");
+		if (fn && *fn)
+			settings_.source_record_filter = fn;
+	}
+	settings_.source_record_sources.clear();
+	obs_data_array_t *sr_arr = obs_data_get_array(data, "source_record_sources");
+	if (sr_arr) {
+		const size_t n = obs_data_array_count(sr_arr);
+		for (size_t i = 0; i < n; i++) {
+			obs_data_t *item = obs_data_array_item(sr_arr, i);
+			const char *name = nullptr;
+			if (obs_data_has_user_value(item, "source_name"))
+				name = obs_data_get_string(item, "source_name");
+			else
+				name = obs_data_get_string(item, "name");
+			/* Also allow plain string array entries via obs_data_get_string on item root — skip. */
+			if ((!name || !*name) && obs_data_has_user_value(item, "value"))
+				name = obs_data_get_string(item, "value");
+			if (name && *name)
+				settings_.source_record_sources.emplace_back(name);
+			obs_data_release(item);
+		}
+		obs_data_array_release(sr_arr);
+	}
+
+	if (obs_data_has_user_value(data, "x_live_client_id")) {
+		const char *cid = obs_data_get_string(data, "x_live_client_id");
+		if (cid)
+			settings_.x_live_client_id = cid;
+	}
+	if (obs_data_has_user_value(data, "x_live_source_id")) {
+		const char *sid = obs_data_get_string(data, "x_live_source_id");
+		if (sid)
+			settings_.x_live_source_id = sid; /* never log */
+	}
+
 	obs_data_array_t *arr = obs_data_get_array(data, "sources");
 	if (arr) {
 		const size_t n = obs_data_array_count(arr);
@@ -294,6 +331,20 @@ void MsrController::save_settings()
 	}
 	obs_data_set_array(data, "destinations", darr);
 	obs_data_array_release(darr);
+
+	obs_data_set_string(data, "source_record_filter", settings_.source_record_filter.c_str());
+	obs_data_array_t *sr_out = obs_data_array_create();
+	for (const auto &name : settings_.source_record_sources) {
+		obs_data_t *item = obs_data_create();
+		obs_data_set_string(item, "source_name", name.c_str());
+		obs_data_array_push_back(sr_out, item);
+		obs_data_release(item);
+	}
+	obs_data_set_array(data, "source_record_sources", sr_out);
+	obs_data_array_release(sr_out);
+
+	obs_data_set_string(data, "x_live_client_id", settings_.x_live_client_id.c_str());
+	obs_data_set_string(data, "x_live_source_id", settings_.x_live_source_id.c_str()); /* never log */
 
 	const char *json = obs_data_get_json(data);
 	std::ofstream out(settings_path(), std::ios::trunc);
@@ -895,6 +946,154 @@ void MsrController::stream_hotkey_pressed(void *data, obs_hotkey_id id, obs_hotk
 		self->toggle_streams();
 }
 
+void MsrController::set_source_record_state_callback(StateCallback cb)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	source_record_state_cb_ = std::move(cb);
+}
+
+void MsrController::notify_source_record_state()
+{
+	StateCallback cb;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		cb = source_record_state_cb_;
+	}
+	const bool active = source_recording();
+	if (cb)
+		cb(active);
+}
+
+std::vector<std::string> MsrController::source_record_targets() const
+{
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		if (!settings_.source_record_sources.empty())
+			return settings_.source_record_sources;
+	}
+
+	std::vector<std::string> found;
+	std::string filter_name;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		filter_name = settings_.source_record_filter;
+	}
+	if (filter_name.empty())
+		return found;
+
+	struct EnumCtx {
+		const char *filter_name;
+		std::vector<std::string> *out;
+	} ctx{filter_name.c_str(), &found};
+
+	obs_enum_sources(
+		[](void *param, obs_source_t *source) -> bool {
+			auto *c = static_cast<EnumCtx *>(param);
+			if (!source)
+				return true;
+			const obs_source_type t = obs_source_get_type(source);
+			if (t != OBS_SOURCE_TYPE_INPUT && t != OBS_SOURCE_TYPE_SCENE)
+				return true;
+			obs_source_t *f = obs_source_get_filter_by_name(source, c->filter_name);
+			if (f) {
+				const char *n = obs_source_get_name(source);
+				if (n && *n)
+					c->out->emplace_back(n);
+				obs_source_release(f);
+			}
+			return true;
+		},
+		&ctx);
+	return found;
+}
+
+bool MsrController::source_recording() const
+{
+	std::string filter_name;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		filter_name = settings_.source_record_filter;
+	}
+	if (filter_name.empty())
+		return false;
+	const auto targets = source_record_targets();
+	if (targets.empty())
+		return false;
+	for (const auto &name : targets) {
+		obs_source_t *src = obs_get_source_by_name(name.c_str());
+		if (!src)
+			continue;
+		obs_source_t *f = obs_source_get_filter_by_name(src, filter_name.c_str());
+		obs_source_release(src);
+		if (!f)
+			continue;
+		const bool en = obs_source_enabled(f);
+		obs_source_release(f);
+		if (en)
+			return true;
+	}
+	return false;
+}
+
+bool MsrController::set_source_recording(bool enabled)
+{
+	std::string filter_name;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		filter_name = settings_.source_record_filter;
+	}
+	if (filter_name.empty()) {
+		obs_log(LOG_WARNING, "source record: filter name empty");
+		return false;
+	}
+	const auto targets = source_record_targets();
+	if (targets.empty()) {
+		obs_log(LOG_WARNING, "source record: no target sources (set source_record_sources or add '%s' filters)",
+			filter_name.c_str());
+		notify_source_record_state();
+		return false;
+	}
+	size_t ok_n = 0;
+	for (const auto &name : targets) {
+		obs_source_t *src = obs_get_source_by_name(name.c_str());
+		if (!src) {
+			obs_log(LOG_WARNING, "source record: source '%s' not found", name.c_str());
+			continue;
+		}
+		obs_source_t *f = obs_source_get_filter_by_name(src, filter_name.c_str());
+		if (!f) {
+			obs_log(LOG_WARNING, "source record: filter '%s' missing on '%s'", filter_name.c_str(),
+				name.c_str());
+			obs_source_release(src);
+			continue;
+		}
+		obs_source_set_enabled(f, enabled);
+		obs_source_release(f);
+		obs_source_release(src);
+		ok_n++;
+	}
+	obs_log(LOG_INFO, "source record %s on %zu/%zu source(s)", enabled ? "enabled" : "disabled", ok_n,
+		targets.size());
+	notify_source_record_state();
+	return ok_n > 0;
+}
+
+bool MsrController::toggle_source_recording()
+{
+	return set_source_recording(!source_recording());
+}
+
+void MsrController::source_record_hotkey_pressed(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
+{
+	UNUSED_PARAMETER(id);
+	UNUSED_PARAMETER(hotkey);
+	if (!pressed)
+		return;
+	auto *self = static_cast<MsrController *>(data);
+	if (self)
+		self->toggle_source_recording();
+}
+
 void MsrController::register_hotkey()
 {
 	if (hotkey_id_ == OBS_INVALID_HOTKEY_ID) {
@@ -930,6 +1129,11 @@ void MsrController::register_hotkey()
 		chapter_hotkey_id_ = obs_hotkey_register_frontend("msr.chapter", "Multi Source Record: Add Chapter",
 								  chapter_hotkey_pressed, this);
 	}
+	if (source_record_hotkey_id_ == OBS_INVALID_HOTKEY_ID) {
+		source_record_hotkey_id_ = obs_hotkey_register_frontend(
+			"msr.source_record", "Multi Source Record: Record All Sources (Source Record filters)",
+			source_record_hotkey_pressed, this);
+	}
 }
 
 void MsrController::unregister_hotkey()
@@ -953,6 +1157,10 @@ void MsrController::unregister_hotkey()
 	if (replay_hotkey_id_ != OBS_INVALID_HOTKEY_ID) {
 		obs_hotkey_unregister(replay_hotkey_id_);
 		replay_hotkey_id_ = OBS_INVALID_HOTKEY_ID;
+	}
+	if (source_record_hotkey_id_ != OBS_INVALID_HOTKEY_ID) {
+		obs_hotkey_unregister(source_record_hotkey_id_);
+		source_record_hotkey_id_ = OBS_INVALID_HOTKEY_ID;
 	}
 }
 
@@ -1045,6 +1253,7 @@ void MsrController::ws_status(obs_data_t *request_data, obs_data_t *response_dat
 	obs_data_set_bool(response_data, "paused", paused);
 	obs_data_set_bool(response_data, "streaming", streaming);
 	obs_data_set_bool(response_data, "replaying", replaying);
+	obs_data_set_bool(response_data, "source_recording", self && self->source_recording());
 	obs_data_array_t *arr = obs_data_array_create();
 	if (self) {
 		for (const auto &path : self->active_outputs()) {
@@ -1138,6 +1347,17 @@ void MsrController::ws_get_settings(obs_data_t *request_data, obs_data_t *respon
 	}
 	obs_data_set_array(response_data, "destinations", darr);
 	obs_data_array_release(darr);
+	obs_data_set_string(response_data, "source_record_filter", s.source_record_filter.c_str());
+	obs_data_array_t *sr_arr = obs_data_array_create();
+	for (const auto &name : s.source_record_sources) {
+		obs_data_t *item = obs_data_create();
+		obs_data_set_string(item, "source_name", name.c_str());
+		obs_data_array_push_back(sr_arr, item);
+		obs_data_release(item);
+	}
+	obs_data_set_array(response_data, "source_record_sources", sr_arr);
+	obs_data_array_release(sr_arr);
+	obs_data_set_bool(response_data, "source_recording", self->source_recording());
 }
 
 void MsrController::ws_configure(obs_data_t *request_data, obs_data_t *response_data, void *priv)
@@ -1193,6 +1413,28 @@ void MsrController::ws_configure(obs_data_t *request_data, obs_data_t *response_
 		s.split_time_min = (int)obs_data_get_int(request_data, "split_time_min");
 	if (obs_data_has_user_value(request_data, "split_size_mb"))
 		s.split_size_mb = (int)obs_data_get_int(request_data, "split_size_mb");
+	if (obs_data_has_user_value(request_data, "source_record_filter")) {
+		const char *fn = obs_data_get_string(request_data, "source_record_filter");
+		if (fn && *fn)
+			s.source_record_filter = fn;
+	}
+	if (obs_data_has_user_value(request_data, "source_record_sources")) {
+		s.source_record_sources.clear();
+		obs_data_array_t *sr_in = obs_data_get_array(request_data, "source_record_sources");
+		if (sr_in) {
+			const size_t n = obs_data_array_count(sr_in);
+			for (size_t i = 0; i < n; i++) {
+				obs_data_t *item = obs_data_array_item(sr_in, i);
+				const char *name = obs_data_get_string(item, "source_name");
+				if ((!name || !*name) && obs_data_has_user_value(item, "name"))
+					name = obs_data_get_string(item, "name");
+				if (name && *name)
+					s.source_record_sources.emplace_back(name);
+				obs_data_release(item);
+			}
+			obs_data_array_release(sr_in);
+		}
+	}
 
 	obs_data_array_t *arr = obs_data_get_array(request_data, "sources");
 	if (arr) {
@@ -1349,7 +1591,6 @@ void MsrController::ws_stop_replay(obs_data_t *request_data, obs_data_t *respons
 	obs_data_set_bool(response_data, "replaying", false);
 }
 
-
 void MsrController::ws_vertical_add_source(obs_data_t *request_data, obs_data_t *response_data, void *priv)
 {
 	UNUSED_PARAMETER(priv);
@@ -1410,21 +1651,22 @@ void MsrController::ws_vertical_status(obs_data_t *request_data, obs_data_t *res
 			obs_data_t *row = obs_data_create();
 			obs_data_set_string(row, "name", obs_source_get_name(src));
 			obs_data_set_bool(row, "visible", obs_sceneitem_visible(item));
-			obs_data_set_bool(row, "audio_enabled",
-					 MsrVerticalAudioMix::source_audio_enabled(src));
+			obs_data_set_bool(row, "audio_enabled", MsrVerticalAudioMix::source_audio_enabled(src));
 			{
 				auto *vc2 = MsrVerticalCanvas::instance();
 				const char *nm = obs_source_get_name(src);
-				obs_data_set_bool(row, "hide_horizontal",
-						  vc2 && nm && vc2->item_hide_horizontal(nm));
+				obs_data_set_bool(row, "hide_horizontal", vc2 && nm && vc2->item_hide_horizontal(nm));
 			}
-			vec2 pos; obs_sceneitem_get_pos(item, &pos);
+			vec2 pos;
+			obs_sceneitem_get_pos(item, &pos);
 			obs_data_set_double(row, "pos_x", pos.x);
 			obs_data_set_double(row, "pos_y", pos.y);
-			vec2 scale; obs_sceneitem_get_scale(item, &scale);
+			vec2 scale;
+			obs_sceneitem_get_scale(item, &scale);
 			obs_data_set_double(row, "scale_x", scale.x);
 			obs_data_set_double(row, "scale_y", scale.y);
-			vec2 bounds; obs_sceneitem_get_bounds(item, &bounds);
+			vec2 bounds;
+			obs_sceneitem_get_bounds(item, &bounds);
 			obs_data_set_double(row, "bounds_x", bounds.x);
 			obs_data_set_double(row, "bounds_y", bounds.y);
 			obs_data_set_int(row, "bounds_type", (int)obs_sceneitem_get_bounds_type(item));
@@ -1471,7 +1713,6 @@ void MsrController::ws_vertical_status(obs_data_t *request_data, obs_data_t *res
 	obs_data_set_bool(response_data, "success", true);
 }
 
-
 void MsrController::ws_vertical_set_item(obs_data_t *request_data, obs_data_t *response_data, void *priv)
 {
 	UNUSED_PARAMETER(priv);
@@ -1495,9 +1736,6 @@ void MsrController::ws_vertical_set_item(obs_data_t *request_data, obs_data_t *r
 	obs_data_set_bool(response_data, "audio_enabled", vc->item_audio_enabled(name));
 	obs_data_set_bool(response_data, "hide_horizontal", vc->item_hide_horizontal(name));
 }
-
-
-
 
 void MsrController::ws_vertical_set_layout(obs_data_t *request_data, obs_data_t *response_data, void *priv)
 {
@@ -1553,6 +1791,65 @@ void MsrController::ws_vertical_select(obs_data_t *request_data, obs_data_t *res
 	obs_data_set_string(response_data, "source_name", name);
 }
 
+void MsrController::ws_source_record_status(obs_data_t *request_data, obs_data_t *response_data, void *priv)
+{
+	UNUSED_PARAMETER(request_data);
+	auto *self = static_cast<MsrController *>(priv);
+	obs_data_set_bool(response_data, "success", self != nullptr);
+	obs_data_set_bool(response_data, "source_recording", self && self->source_recording());
+	obs_data_array_t *arr = obs_data_array_create();
+	if (self) {
+		MsrSettings s = self->settings();
+		obs_data_set_string(response_data, "filter", s.source_record_filter.c_str());
+		for (const auto &name : self->source_record_targets()) {
+			obs_data_t *item = obs_data_create();
+			obs_data_set_string(item, "source_name", name.c_str());
+			bool en = false;
+			obs_source_t *src = obs_get_source_by_name(name.c_str());
+			if (src) {
+				obs_source_t *f = obs_source_get_filter_by_name(src, s.source_record_filter.c_str());
+				if (f) {
+					en = obs_source_enabled(f);
+					obs_source_release(f);
+				}
+				obs_source_release(src);
+			}
+			obs_data_set_bool(item, "recording", en);
+			obs_data_array_push_back(arr, item);
+			obs_data_release(item);
+		}
+	}
+	obs_data_set_array(response_data, "sources", arr);
+	obs_data_array_release(arr);
+}
+
+void MsrController::ws_start_source_record(obs_data_t *request_data, obs_data_t *response_data, void *priv)
+{
+	UNUSED_PARAMETER(request_data);
+	auto *self = static_cast<MsrController *>(priv);
+	bool ok = self && self->set_source_recording(true);
+	obs_data_set_bool(response_data, "success", ok);
+	obs_data_set_bool(response_data, "source_recording", self && self->source_recording());
+}
+
+void MsrController::ws_stop_source_record(obs_data_t *request_data, obs_data_t *response_data, void *priv)
+{
+	UNUSED_PARAMETER(request_data);
+	auto *self = static_cast<MsrController *>(priv);
+	bool ok = self && self->set_source_recording(false);
+	obs_data_set_bool(response_data, "success", ok);
+	obs_data_set_bool(response_data, "source_recording", self && self->source_recording());
+}
+
+void MsrController::ws_toggle_source_record(obs_data_t *request_data, obs_data_t *response_data, void *priv)
+{
+	UNUSED_PARAMETER(request_data);
+	auto *self = static_cast<MsrController *>(priv);
+	bool ok = self && self->toggle_source_recording();
+	obs_data_set_bool(response_data, "success", ok);
+	obs_data_set_bool(response_data, "source_recording", self && self->source_recording());
+}
+
 void MsrController::register_websocket()
 {
 	ws_vendor_ = obs_websocket_register_vendor("obs-multi-source-record");
@@ -1582,5 +1879,9 @@ void MsrController::register_websocket()
 	obs_websocket_vendor_register_request(ws_vendor_, "vertical_select", ws_vertical_select, this);
 	obs_websocket_vendor_register_request(ws_vendor_, "vertical_fit", ws_vertical_fit, this);
 	obs_websocket_vendor_register_request(ws_vendor_, "vertical_set_layout", ws_vertical_set_layout, this);
+	obs_websocket_vendor_register_request(ws_vendor_, "source_record_status", ws_source_record_status, this);
+	obs_websocket_vendor_register_request(ws_vendor_, "start_source_record", ws_start_source_record, this);
+	obs_websocket_vendor_register_request(ws_vendor_, "stop_source_record", ws_stop_source_record, this);
+	obs_websocket_vendor_register_request(ws_vendor_, "toggle_source_record", ws_toggle_source_record, this);
 	obs_log(LOG_INFO, "registered obs-websocket vendor obs-multi-source-record");
 }

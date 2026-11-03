@@ -79,6 +79,15 @@ struct MsrSettings {
 	int split_size_mb = 1024; /* used when BySize */
 	std::vector<MsrSourceConfig> sources;
 	std::vector<MsrStreamDestination> destinations;
+	/** Filter display name used by Exeldro Source Record (or compatible) plugin. */
+	std::string source_record_filter = "Source Record";
+	/** Sources whose Source Record filter is toggled by Record All Sources.
+	 *  Empty = auto-discover every source that already has source_record_filter. */
+	std::vector<std::string> source_record_sources;
+	/** Bring-your-own X OAuth Client ID (public for Native App; not a secret). */
+	std::string x_live_client_id;
+	/** Cached X Livestream source id (equals stream key — never log). */
+	std::string x_live_source_id;
 };
 
 inline const char *orientation_token(MsrOrientation o)
