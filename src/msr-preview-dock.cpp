@@ -331,7 +331,7 @@ void MsrPreviewDisplay::ensure_canvas()
 	/* Re-force if something left the canvas landscape. */
 	if (vc->width() >= vc->height() || vc->width() == 0 || vc->height() == 0)
 		vc->ensure(1080, 1920);
-	vc->follow_main_scene();
+	/* follow is owned by plugin-main / transition_start — do not re-enter here */
 }
 
 void MsrPreviewDisplay::create_display()
@@ -1149,6 +1149,10 @@ void MsrPreviewDisplay::mouseReleaseEvent(QMouseEvent *event)
 			}
 			obs_log(LOG_INFO, "msr-preview release handle=%u moved=%d size=%.1fx%.1f",
 				(unsigned)stretch_handle_, mouse_moved_ ? 1 : 0, w, h);
+			if (mouse_moved_) {
+				if (auto *vc = MsrVerticalCanvas::instance())
+					vc->persist_current_scene_layout();
+			}
 		}
 		mouse_down_ = false;
 		mouse_moved_ = false;
@@ -1443,7 +1447,7 @@ void MsrPreviewDock::ensure_canvas()
 	vc->ensure((uint32_t)w, (uint32_t)h);
 	if (vc->width() >= vc->height() || vc->width() == 0 || vc->height() == 0)
 		vc->ensure(1080, 1920);
-	vc->follow_main_scene();
+	/* follow is owned by plugin-main / transition_start — do not re-enter here */
 }
 
 void MsrPreviewDock::refresh_all()

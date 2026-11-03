@@ -43,9 +43,20 @@ public:
 	bool ready() const;
 
 	bool follow_main_scene();
+	/** Follow a main scene by name (used when main transition starts). */
+	bool follow_scene_named(const std::string &scene_name, bool animate);
 	std::string followed_scene_name() const;
 	void set_transition_ms(int ms);
 	int transition_ms() const;
+
+	/** Persist / restore per-scene vertical transforms (OBS canvas scenes are not reliably saved). */
+	void save_vertical_layouts();
+	void load_vertical_layouts();
+	void persist_current_scene_layout();
+
+	/** Hook main OBS transition so vertical fade starts with it (not after SCENE_CHANGED). */
+	void attach_frontend_transition();
+	void detach_frontend_transition();
 
 	std::vector<std::string> list_scenes();
 	bool set_program_scene(const std::string &scene_name);
@@ -90,15 +101,22 @@ private:
 	obs_sceneitem_t *find_item_by_uuid(obs_scene_t *scene, const char *uuid);
 	obs_sceneitem_t *find_item_by_name(obs_scene_t *scene, const std::string &source_name);
 	void apply_default_vertical_transform(obs_sceneitem_t *item);
+	bool apply_saved_transform(obs_sceneitem_t *item, const std::string &scene_name);
 	bool sync_from_main(obs_scene_t *main_scene, obs_scene_t *vert_scene);
 	void attach_main_signals(obs_source_t *main_scene_source);
 	void detach_main_signals();
 	bool ensure_transition_locked();
 	void show_scene_locked(obs_source_t *scene_source, bool animate);
+	bool follow_scene_named_locked(const std::string &scene_name, obs_scene_t *main_scene, bool animate);
+	std::string layouts_path() const;
+	obs_data_t *layouts_root(); /* locked; strong ref held in layouts_ */
+	void capture_item_to_layouts(obs_sceneitem_t *item, const std::string &scene_name);
+	void apply_item_from_data(obs_sceneitem_t *item, obs_data_t *row);
 
 	static void on_main_item_add(void *data, calldata_t *cd);
 	static void on_main_item_remove(void *data, calldata_t *cd);
 	static void on_main_item_visible(void *data, calldata_t *cd);
+	static void on_frontend_transition_start(void *data, calldata_t *cd);
 
 	static bool sceneitem_hide_horizontal(obs_sceneitem_t *item);
 	static void sceneitem_set_hide_horizontal(obs_sceneitem_t *item, bool hide);
@@ -109,9 +127,12 @@ private:
 	uint32_t height_ = 0;
 	std::string followed_name_;
 	obs_source_t *main_signal_source_ = nullptr;
+	obs_source_t *frontend_transition_ = nullptr; /* main OBS transition we listen to */
 	obs_source_t *transition_ = nullptr; /* private fade_transition on canvas ch0 */
 	int transition_ms_ = 300;
 	MsrVerticalAudioMix audio_mix_;
 	std::atomic_bool applying_hide_horizontal_{false};
+	std::atomic_bool following_{false}; /* re-entrancy guard */
+	obs_data_t *layouts_ = nullptr; /* scene -> uuid -> transform */
 	static MsrVerticalCanvas *instance_;
 };

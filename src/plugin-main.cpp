@@ -51,15 +51,22 @@ static void frontend_event(enum obs_frontend_event event, void *)
 			QMetaObject::invokeMethod(dock_widget, "refresh_sources", Qt::QueuedConnection);
 		if (auto *vc = MsrVerticalCanvas::instance()) {
 			auto s = c->settings();
+			vc->load_vertical_layouts();
 			vc->ensure((uint32_t)s.vertical_width, (uint32_t)s.vertical_height);
 			vc->set_transition_ms(s.vertical_transition_ms);
+			vc->attach_frontend_transition();
 			vc->follow_main_scene();
 		}
 		if (preview_dock)
 			QMetaObject::invokeMethod(preview_dock, "refresh_all", Qt::QueuedConnection);
 		/* Start replay buffers if enabled in saved settings (safe; no OBS stream). */
 		c->sync_replays_to_settings();
+	} else if (event == OBS_FRONTEND_EVENT_TRANSITION_CHANGED) {
+		if (auto *vc = MsrVerticalCanvas::instance())
+			vc->attach_frontend_transition();
 	} else if (event == OBS_FRONTEND_EVENT_SCENE_CHANGED) {
+		/* Prefer transition_start (fires with main fade). This is the late fallback
+		 * when there was no transition / cut — follow_scene_named no-ops if already there. */
 		if (auto *vc = MsrVerticalCanvas::instance()) {
 			auto s = c->settings();
 			vc->ensure((uint32_t)s.vertical_width, (uint32_t)s.vertical_height);
@@ -90,6 +97,10 @@ static void frontend_event(enum obs_frontend_event event, void *)
 			QMetaObject::invokeMethod(dock_widget, "update_recording_state", Qt::QueuedConnection,
 						  Q_ARG(bool, c->recording()));
 	} else if (event == OBS_FRONTEND_EVENT_EXIT || event == OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN) {
+		if (auto *vc = MsrVerticalCanvas::instance()) {
+			vc->persist_current_scene_layout();
+			vc->detach_frontend_transition();
+		}
 		c->stop_replays();
 		c->stop_streams();
 		c->stop_all();

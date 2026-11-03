@@ -12,6 +12,8 @@ the Free Software Foundation; either version 2 of the License, or
 #include "plugin-support.h"
 
 #include <obs-frontend-api.h>
+#include <obs-module.h>
+#include <util/platform.h>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -40,9 +42,14 @@ void MsrVerticalCanvas::destroy()
 
 MsrVerticalCanvas::~MsrVerticalCanvas()
 {
+	detach_frontend_transition();
 	detach_main_signals();
 	audio_mix_.shutdown();
 	std::lock_guard<std::mutex> lock(mutex_);
+	if (layouts_) {
+		obs_data_release(layouts_);
+		layouts_ = nullptr;
+	}
 	if (transition_) {
 		if (canvas_)
 			obs_canvas_set_channel(canvas_, 0, nullptr);
@@ -58,7 +65,11 @@ MsrVerticalCanvas::~MsrVerticalCanvas()
 
 obs_canvas_t *MsrVerticalCanvas::find_existing() const
 {
-	return obs_get_canvas_by_name(kCanvasName);
+	obs_canvas_t *c = obs_get_canvas_by_name(kCanvasName);
+	if (c)
+		return c;
+	/* Prior sessions sometimes renamed a duplicate to "MSR Vertical 2". */
+	return obs_get_canvas_by_name("MSR Vertical 2");
 }
 
 bool MsrVerticalCanvas::ensure_default_scene(obs_canvas_t *canvas)
@@ -78,12 +89,16 @@ bool MsrVerticalCanvas::ensure_default_scene(obs_canvas_t *canvas)
 		obs_scene_release(scene);
 		return false;
 	}
-	obs_source_t *ss = obs_scene_get_source(scene);
-	show_scene_locked(ss, false);
-	if (followed_name_.empty())
+	/* Never hard-cut an active follow to the empty default — that killed fades
+	 * when ensure() ran on every SCENE_CHANGED / preview refresh. */
+	if (followed_name_.empty()) {
+		obs_source_t *ss = obs_scene_get_source(scene);
+		show_scene_locked(ss, false);
 		followed_name_ = kDefaultSceneName;
+		obs_log(LOG_INFO, "vertical canvas default scene '%s' is program (fade ready)",
+			kDefaultSceneName);
+	}
 	obs_scene_release(scene);
-	obs_log(LOG_INFO, "vertical canvas default scene '%s' is program (fade ready)", kDefaultSceneName);
 	return true;
 }
 
@@ -399,9 +414,21 @@ bool MsrVerticalCanvas::sync_from_main(obs_scene_t *main_scene, obs_scene_t *ver
 		obs_sceneitem_t *added = obs_scene_add(vert_scene, src);
 		if (added) {
 			apply_default_vertical_transform(added);
-			/* H-hide on main must not hide the vertical twin. */
-			const bool hide_h = sceneitem_hide_horizontal(mitem);
-			obs_sceneitem_set_visible(added, hide_h ? true : obs_sceneitem_visible(mitem));
+			obs_source_t *vsrc = obs_scene_get_source(vert_scene);
+			const char *vname = vsrc ? obs_source_get_name(vsrc) : nullptr;
+			bool restored = false;
+			if (vname && *vname)
+				restored = apply_saved_transform(added, vname);
+			if (!restored) {
+				/* H-hide on main must not hide the vertical twin. */
+				const bool hide_h = sceneitem_hide_horizontal(mitem);
+				obs_sceneitem_set_visible(added, hide_h ? true : obs_sceneitem_visible(mitem));
+			} else {
+				/* Still force visible when main is H-hidden so vertical twin shows. */
+				const bool hide_h = sceneitem_hide_horizontal(mitem);
+				if (hide_h)
+					obs_sceneitem_set_visible(added, true);
+			}
 			const char *n = obs_source_get_name(src);
 			obs_log(LOG_INFO, "vertical sync: added '%s'", n ? n : "?");
 		}
@@ -469,52 +496,84 @@ bool MsrVerticalCanvas::follow_main_scene()
 	obs_source_t *main_src = obs_frontend_get_current_scene();
 	if (!main_src)
 		return false;
-
 	const char *name = obs_source_get_name(main_src);
 	if (!name || !*name) {
 		obs_source_release(main_src);
 		return false;
 	}
+	const bool ok = follow_scene_named(name, true);
+	obs_source_release(main_src);
+	return ok;
+}
 
+bool MsrVerticalCanvas::follow_scene_named(const std::string &scene_name, bool animate)
+{
+	if (scene_name.empty())
+		return false;
+	if (following_.exchange(true))
+		return false; /* re-entrant */
+
+	obs_source_t *main_src = obs_get_source_by_name(scene_name.c_str());
+	if (!main_src) {
+		following_.store(false);
+		return false;
+	}
 	obs_scene_t *main_scene = obs_scene_from_source(main_src);
 	if (!main_scene) {
 		obs_source_release(main_src);
+		following_.store(false);
 		return false;
 	}
 
+	bool ok = false;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
-		if (!canvas_) {
-			obs_source_release(main_src);
-			return false;
-		}
-
-		obs_scene_t *vert = obs_canvas_get_scene_by_name(canvas_, name);
-		if (!vert)
-			vert = obs_canvas_scene_create(canvas_, name);
-		if (!vert) {
-			obs_log(LOG_ERROR, "vertical follow: failed to create scene '%s'", name);
-			obs_source_release(main_src);
-			return false;
-		}
-
-		sync_from_main(main_scene, vert);
-		if (!ensure_transition_locked()) {
-			obs_scene_release(vert);
-			obs_source_release(main_src);
-			return false;
-		}
-		const bool animate = (!followed_name_.empty() && followed_name_ != name);
-		show_scene_locked(obs_scene_get_source(vert), animate);
-		followed_name_ = name;
-		obs_scene_release(vert);
+		ok = follow_scene_named_locked(scene_name, main_scene, animate);
 	}
 
 	attach_main_signals(main_src);
-	obs_log(LOG_INFO, "vertical canvas following main scene '%s'", name);
 	obs_source_release(main_src);
-	apply_horizontal_hides();
-	rebuild_audio_mix();
+	if (ok) {
+		apply_horizontal_hides();
+		rebuild_audio_mix();
+	}
+	following_.store(false);
+	return ok;
+}
+
+bool MsrVerticalCanvas::follow_scene_named_locked(const std::string &scene_name, obs_scene_t *main_scene,
+						 bool animate)
+{
+	if (!canvas_ || !main_scene)
+		return false;
+
+	obs_scene_t *vert = obs_canvas_get_scene_by_name(canvas_, scene_name.c_str());
+	if (!vert)
+		vert = obs_canvas_scene_create(canvas_, scene_name.c_str());
+	if (!vert) {
+		obs_log(LOG_ERROR, "vertical follow: failed to create scene '%s'", scene_name.c_str());
+		return false;
+	}
+
+	sync_from_main(main_scene, vert);
+	if (!ensure_transition_locked()) {
+		obs_scene_release(vert);
+		return false;
+	}
+
+	const bool same = (!followed_name_.empty() && followed_name_ == scene_name);
+	if (same) {
+		/* Already showing this scene — sync only; do not restart/cancel a fade. */
+		obs_scene_release(vert);
+		return true;
+	}
+
+	const bool do_anim = animate && !followed_name_.empty() && transition_ms_ > 0;
+	show_scene_locked(obs_scene_get_source(vert), do_anim);
+	followed_name_ = scene_name;
+	obs_log(LOG_INFO, "vertical canvas following main scene '%s' (fade=%s %dms)", scene_name.c_str(),
+		do_anim ? "yes" : "no", transition_ms_);
+	obs_scene_release(vert);
 	return true;
 }
 
@@ -575,6 +634,7 @@ bool MsrVerticalCanvas::set_item_layout(const std::string &source_name, float x,
 	obs_scene_release(scene);
 	obs_log(LOG_INFO, "vertical layout '%s' -> (%.0f,%.0f) %.0fx%.0f bounds=%d", source_name.c_str(), x, y,
 		bounds_w, bounds_h, (int)bounds);
+	persist_current_scene_layout();
 	return true;
 }
 
@@ -590,6 +650,7 @@ bool MsrVerticalCanvas::fit_source(const std::string &source_name)
 	}
 	apply_default_vertical_transform(item);
 	obs_scene_release(scene);
+	persist_current_scene_layout();
 	return true;
 }
 
@@ -645,6 +706,7 @@ bool MsrVerticalCanvas::stretch_source(const std::string &source_name)
 	vec2_set(&pos, 0.0f, 0.0f);
 	obs_sceneitem_set_pos(item, &pos);
 	obs_scene_release(scene);
+	persist_current_scene_layout();
 	return true;
 }
 
@@ -673,6 +735,7 @@ bool MsrVerticalCanvas::center_source(const std::string &source_name)
 	vec2_set(&pos, ((float)cw - bounds.x) * 0.5f, ((float)ch - bounds.y) * 0.5f);
 	obs_sceneitem_set_pos(item, &pos);
 	obs_scene_release(scene);
+	persist_current_scene_layout();
 	return true;
 }
 
@@ -1020,6 +1083,279 @@ void MsrVerticalCanvas::show_scene_locked(obs_source_t *scene_source, bool anima
 		obs_transition_set(transition_, scene_source);
 		return;
 	}
+	obs_log(LOG_INFO, "vertical fade_transition_start -> '%s' (%d ms)", obs_source_get_name(scene_source),
+		transition_ms_);
 	obs_transition_start(transition_, OBS_TRANSITION_MODE_AUTO, (uint32_t)transition_ms_, scene_source);
 }
 
+std::string MsrVerticalCanvas::layouts_path() const
+{
+	char *base = obs_module_config_path(nullptr);
+	if (base) {
+		os_mkdirs(base);
+		bfree(base);
+	}
+	char *profile = obs_frontend_get_current_profile();
+	std::string name = "vertical-layouts";
+	if (profile && *profile) {
+		name += "-";
+		for (const char *p = profile; *p; ++p) {
+			char c = *p;
+			if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' ||
+			    c == '_')
+				name.push_back(c);
+			else
+				name.push_back('_');
+		}
+	}
+	bfree(profile);
+	name += ".json";
+	char *path = obs_module_config_path(name.c_str());
+	std::string out = path ? path : name;
+	bfree(path);
+	return out;
+}
+
+obs_data_t *MsrVerticalCanvas::layouts_root()
+{
+	if (!layouts_) {
+		layouts_ = obs_data_create();
+		obs_data_t *scenes = obs_data_create();
+		obs_data_set_obj(layouts_, "scenes", scenes);
+		obs_data_release(scenes);
+	}
+	return layouts_;
+}
+
+void MsrVerticalCanvas::load_vertical_layouts()
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (layouts_) {
+		obs_data_release(layouts_);
+		layouts_ = nullptr;
+	}
+	const std::string path = layouts_path();
+	layouts_ = obs_data_create_from_json_file_safe(path.c_str(), "bak");
+	if (!layouts_) {
+		layouts_ = obs_data_create();
+		obs_data_t *scenes = obs_data_create();
+		obs_data_set_obj(layouts_, "scenes", scenes);
+		obs_data_release(scenes);
+		obs_log(LOG_INFO, "vertical layouts: new file (%s)", path.c_str());
+		return;
+	}
+	if (!obs_data_get_obj(layouts_, "scenes")) {
+		obs_data_t *scenes = obs_data_create();
+		obs_data_set_obj(layouts_, "scenes", scenes);
+		obs_data_release(scenes);
+	}
+	obs_log(LOG_INFO, "vertical layouts loaded from %s", path.c_str());
+}
+
+void MsrVerticalCanvas::save_vertical_layouts()
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (!layouts_)
+		return;
+	const std::string path = layouts_path();
+	if (!obs_data_save_json_pretty_safe(layouts_, path.c_str(), "tmp", "bak"))
+		obs_log(LOG_WARNING, "vertical layouts save failed: %s", path.c_str());
+	else
+		obs_log(LOG_INFO, "vertical layouts saved to %s", path.c_str());
+}
+
+void MsrVerticalCanvas::capture_item_to_layouts(obs_sceneitem_t *item, const std::string &scene_name)
+{
+	if (!item || scene_name.empty())
+		return;
+	obs_source_t *src = obs_sceneitem_get_source(item);
+	const char *uuid = obs_source_get_uuid(src);
+	if (!uuid || !*uuid)
+		return;
+
+	obs_data_t *root = layouts_root();
+	obs_data_t *scenes = obs_data_get_obj(root, "scenes");
+	if (!scenes)
+		return;
+	obs_data_t *scene_obj = obs_data_get_obj(scenes, scene_name.c_str());
+	if (!scene_obj) {
+		scene_obj = obs_data_create();
+		obs_data_set_obj(scenes, scene_name.c_str(), scene_obj);
+	}
+
+	obs_data_t *row = obs_data_create();
+	vec2 pos, scale, bounds;
+	obs_sceneitem_get_pos(item, &pos);
+	obs_sceneitem_get_scale(item, &scale);
+	obs_sceneitem_get_bounds(item, &bounds);
+	obs_data_set_double(row, "pos_x", pos.x);
+	obs_data_set_double(row, "pos_y", pos.y);
+	obs_data_set_double(row, "scale_x", scale.x);
+	obs_data_set_double(row, "scale_y", scale.y);
+	obs_data_set_double(row, "bounds_x", bounds.x);
+	obs_data_set_double(row, "bounds_y", bounds.y);
+	obs_data_set_int(row, "bounds_type", (int)obs_sceneitem_get_bounds_type(item));
+	obs_data_set_int(row, "bounds_align", (int)obs_sceneitem_get_bounds_alignment(item));
+	obs_data_set_int(row, "align", (int)obs_sceneitem_get_alignment(item));
+	obs_data_set_double(row, "rot", obs_sceneitem_get_rot(item));
+	obs_data_set_bool(row, "visible", obs_sceneitem_visible(item));
+	obs_sceneitem_crop crop;
+	obs_sceneitem_get_crop(item, &crop);
+	obs_data_set_int(row, "crop_left", crop.left);
+	obs_data_set_int(row, "crop_top", crop.top);
+	obs_data_set_int(row, "crop_right", crop.right);
+	obs_data_set_int(row, "crop_bottom", crop.bottom);
+	const char *n = obs_source_get_name(src);
+	if (n)
+		obs_data_set_string(row, "name", n);
+
+	obs_data_set_obj(scene_obj, uuid, row);
+	obs_data_release(row);
+	obs_data_release(scene_obj);
+	obs_data_release(scenes);
+}
+
+void MsrVerticalCanvas::apply_item_from_data(obs_sceneitem_t *item, obs_data_t *row)
+{
+	if (!item || !row)
+		return;
+	if (obs_data_has_user_value(row, "bounds_type"))
+		obs_sceneitem_set_bounds_type(item, (obs_bounds_type)obs_data_get_int(row, "bounds_type"));
+	if (obs_data_has_user_value(row, "bounds_align"))
+		obs_sceneitem_set_bounds_alignment(item, (uint32_t)obs_data_get_int(row, "bounds_align"));
+	if (obs_data_has_user_value(row, "align"))
+		obs_sceneitem_set_alignment(item, (uint32_t)obs_data_get_int(row, "align"));
+	if (obs_data_has_user_value(row, "bounds_x") || obs_data_has_user_value(row, "bounds_y")) {
+		vec2 b;
+		vec2_set(&b, (float)obs_data_get_double(row, "bounds_x"), (float)obs_data_get_double(row, "bounds_y"));
+		obs_sceneitem_set_bounds(item, &b);
+	}
+	if (obs_data_has_user_value(row, "pos_x") || obs_data_has_user_value(row, "pos_y")) {
+		vec2 pos;
+		vec2_set(&pos, (float)obs_data_get_double(row, "pos_x"), (float)obs_data_get_double(row, "pos_y"));
+		obs_sceneitem_set_pos(item, &pos);
+	}
+	if (obs_data_has_user_value(row, "scale_x") || obs_data_has_user_value(row, "scale_y")) {
+		vec2 scale;
+		vec2_set(&scale, (float)obs_data_get_double(row, "scale_x"), (float)obs_data_get_double(row, "scale_y"));
+		obs_sceneitem_set_scale(item, &scale);
+	}
+	if (obs_data_has_user_value(row, "rot"))
+		obs_sceneitem_set_rot(item, (float)obs_data_get_double(row, "rot"));
+	if (obs_data_has_user_value(row, "visible"))
+		obs_sceneitem_set_visible(item, obs_data_get_bool(row, "visible"));
+	if (obs_data_has_user_value(row, "crop_left") || obs_data_has_user_value(row, "crop_top") ||
+	    obs_data_has_user_value(row, "crop_right") || obs_data_has_user_value(row, "crop_bottom")) {
+		obs_sceneitem_crop crop = {};
+		crop.left = (int)obs_data_get_int(row, "crop_left");
+		crop.top = (int)obs_data_get_int(row, "crop_top");
+		crop.right = (int)obs_data_get_int(row, "crop_right");
+		crop.bottom = (int)obs_data_get_int(row, "crop_bottom");
+		obs_sceneitem_set_crop(item, &crop);
+	}
+}
+
+bool MsrVerticalCanvas::apply_saved_transform(obs_sceneitem_t *item, const std::string &scene_name)
+{
+	if (!item || scene_name.empty() || !layouts_)
+		return false;
+	obs_source_t *src = obs_sceneitem_get_source(item);
+	const char *uuid = obs_source_get_uuid(src);
+	if (!uuid || !*uuid)
+		return false;
+	obs_data_t *scenes = obs_data_get_obj(layouts_, "scenes");
+	if (!scenes)
+		return false;
+	obs_data_t *scene_obj = obs_data_get_obj(scenes, scene_name.c_str());
+	obs_data_release(scenes);
+	if (!scene_obj)
+		return false;
+	obs_data_t *row = obs_data_get_obj(scene_obj, uuid);
+	obs_data_release(scene_obj);
+	if (!row)
+		return false;
+	apply_item_from_data(item, row);
+	obs_data_release(row);
+	return true;
+}
+
+void MsrVerticalCanvas::persist_current_scene_layout()
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (followed_name_.empty() || !canvas_)
+		return;
+	obs_scene_t *scene = obs_canvas_get_scene_by_name(canvas_, followed_name_.c_str());
+	if (!scene)
+		return;
+	struct Ctx {
+		MsrVerticalCanvas *self;
+		const std::string *scene_name;
+	} ctx{this, &followed_name_};
+	obs_scene_enum_items(
+		scene,
+		[](obs_scene_t *, obs_sceneitem_t *item, void *p) -> bool {
+			auto *c = static_cast<Ctx *>(p);
+			c->self->capture_item_to_layouts(item, *c->scene_name);
+			return true;
+		},
+		&ctx);
+	obs_scene_release(scene);
+	if (!layouts_)
+		return;
+	const std::string path = layouts_path();
+	if (!obs_data_save_json_pretty_safe(layouts_, path.c_str(), "tmp", "bak"))
+		obs_log(LOG_WARNING, "vertical layouts save failed: %s", path.c_str());
+	else
+		obs_log(LOG_INFO, "vertical layouts saved to %s", path.c_str());
+}
+
+void MsrVerticalCanvas::detach_frontend_transition()
+{
+	if (!frontend_transition_)
+		return;
+	signal_handler_t *sh = obs_source_get_signal_handler(frontend_transition_);
+	if (sh)
+		signal_handler_disconnect(sh, "transition_start", on_frontend_transition_start, this);
+	obs_source_release(frontend_transition_);
+	frontend_transition_ = nullptr;
+}
+
+void MsrVerticalCanvas::attach_frontend_transition()
+{
+	obs_source_t *t = obs_frontend_get_current_transition();
+	if (!t)
+		return;
+	if (frontend_transition_ == t) {
+		obs_source_release(t);
+		return;
+	}
+	detach_frontend_transition();
+	frontend_transition_ = t; /* take get ref */
+	signal_handler_t *sh = obs_source_get_signal_handler(frontend_transition_);
+	if (sh)
+		signal_handler_connect(sh, "transition_start", on_frontend_transition_start, this);
+	obs_log(LOG_INFO, "vertical fade hooked to main transition '%s'", obs_source_get_name(t));
+}
+
+void MsrVerticalCanvas::on_frontend_transition_start(void *data, calldata_t *cd)
+{
+	auto *self = static_cast<MsrVerticalCanvas *>(data);
+	if (!self)
+		return;
+	obs_source_t *transition = (obs_source_t *)calldata_ptr(cd, "source");
+	if (!transition)
+		transition = self->frontend_transition_;
+	obs_source_t *target = nullptr;
+	if (transition)
+		target = obs_transition_get_source(transition, OBS_TRANSITION_SOURCE_B);
+	if (!target)
+		target = obs_frontend_get_current_scene();
+	if (!target)
+		return;
+	const char *name = obs_source_get_name(target);
+	if (name && *name) {
+		obs_log(LOG_INFO, "main transition_start -> '%s' (start vertical fade with it)", name);
+		self->follow_scene_named(name, true);
+	}
+	obs_source_release(target);
+}
