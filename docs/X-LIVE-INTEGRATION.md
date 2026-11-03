@@ -1,6 +1,6 @@
 # X Live from MSR dock — research & plan (Step 1)
 
-**Status:** research complete; scaffolding on `feat/x-live-dock`.  
+**Status:** research complete; scaffolding on `feat/x-live-dock` @ `cce15bb`; draft PR #1 CI green (Windows/macOS/Ubuntu + format).  
 **Do not** install on Travis’s PC or Go Live from this work.
 
 Sources: [X Livestream API docs](https://github.com/xdevplatform/docs/tree/main/livestream-api) (2026), OAuth 2.0 PKCE guide, and Grok Bot `user-X` MCP livestream tools / `x-api-mcp-guide`.
@@ -121,3 +121,14 @@ Scopes: `broadcast.read`, `broadcast.write`, `offline.access` (+ optional `users
 - `docs/X-LIVE-INTEGRATION.md` (this file)
 - `src/msr-x-live.hpp` / `src/msr-x-live.cpp` — client stub + status enum
 - Dock placeholder group “X Live” (disabled until Client ID + whitelist)
+
+---
+
+## Build status (Step 1)
+
+- Branch: `feat/x-live-dock` @ `cce15bb`
+- Draft PR: https://github.com/gamerdadtcg/obs-multi-source-record/pull/1 (private)
+- CI run 41712108995: **success** — clang-format, gersemi, Windows, macOS, Ubuntu 24.04
+- Scaffold only: Sign in / Sync / Go Live stubs return not-implemented; no tokens/keys logged
+- Not installed on Travis’s PC; OBS not touched; no Go Live
+
