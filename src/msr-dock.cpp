@@ -63,7 +63,6 @@ bool enum_sources_cb(void *data, obs_source_t *source)
 	return true;
 }
 
-
 struct SectionWidgets {
 	QWidget *section = nullptr;
 	QToolButton *toggle = nullptr;
@@ -84,9 +83,9 @@ SectionWidgets make_collapsible(QWidget *parent, const QString &title, bool defa
 	sw.toggle->setCheckable(true);
 	sw.toggle->setChecked(default_open);
 	sw.toggle->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-	sw.toggle->setStyleSheet(QStringLiteral(
-		"QToolButton { border: none; font-weight: 600; text-align: left; padding: 4px 2px; }"
-		"QToolButton:hover { background: rgba(127,127,127,40); }"));
+	sw.toggle->setStyleSheet(
+		QStringLiteral("QToolButton { border: none; font-weight: 600; text-align: left; padding: 4px 2px; }"
+			       "QToolButton:hover { background: rgba(127,127,127,40); }"));
 	auto set_header = [toggle = sw.toggle, title](bool on) {
 		toggle->setText(QStringLiteral("%1  %2").arg(on ? QStringLiteral("▾") : QStringLiteral("▸"), title));
 	};
@@ -100,11 +99,10 @@ SectionWidgets make_collapsible(QWidget *parent, const QString &title, bool defa
 	body_l->setSpacing(6);
 	vl->addWidget(sw.body);
 
-	QObject::connect(sw.toggle, &QToolButton::toggled, sw.section,
-			 [set_header, body = sw.body](bool on) {
-				 body->setVisible(on);
-				 set_header(on);
-			 });
+	QObject::connect(sw.toggle, &QToolButton::toggled, sw.section, [set_header, body = sw.body](bool on) {
+		body->setVisible(on);
+		set_header(on);
+	});
 	return sw;
 }
 
@@ -123,15 +121,22 @@ MsrDock::MsrDock(QWidget *parent) : QWidget(parent)
 			QMetaObject::invokeMethod(this, "update_recording_state", Qt::QueuedConnection,
 						  Q_ARG(bool, recording));
 		});
+		c->set_source_record_state_callback([this](bool active) {
+			QMetaObject::invokeMethod(this, "update_source_record_state", Qt::QueuedConnection,
+						  Q_ARG(bool, active));
+		});
 		update_recording_state(c->recording());
+		update_source_record_state(c->source_recording());
 	}
 	refresh_status_labels();
 }
 
 MsrDock::~MsrDock()
 {
-	if (auto *c = MsrController::instance())
+	if (auto *c = MsrController::instance()) {
 		c->set_state_callback(nullptr);
+		c->set_source_record_state_callback(nullptr);
+	}
 }
 
 void MsrDock::build_ui()
@@ -169,7 +174,7 @@ void MsrDock::build_ui()
 	root->addWidget(hint);
 
 	auto add_section = [this, content, root](const QString &title, const char *key,
-						bool default_open) -> QWidget * {
+						 bool default_open) -> QWidget * {
 		SectionWidgets sw = make_collapsible(content, title, default_open);
 		sections_.push_back(SectionRef{sw.toggle, sw.body, key, default_open});
 		root->addWidget(sw.section);
@@ -177,8 +182,7 @@ void MsrDock::build_ui()
 	};
 
 	/* Sources — default open */
-	auto *sources_body = add_section(QString::fromUtf8(obs_module_text("VerticalSources")), "SectionSources",
-					 true);
+	auto *sources_body = add_section(QString::fromUtf8(obs_module_text("VerticalSources")), "SectionSources", true);
 	auto *sources_l = qobject_cast<QVBoxLayout *>(sources_body->layout());
 	source_scroll_ = new QScrollArea(sources_body);
 	source_scroll_->setWidgetResizable(true);
@@ -220,8 +224,8 @@ void MsrDock::build_ui()
 	output_l->addLayout(fmt_row);
 
 	/* Recording options — default closed */
-	auto *opts_body = add_section(QString::fromUtf8(obs_module_text("RecordingOptions")), "SectionRecording",
-				      false);
+	auto *opts_body =
+		add_section(QString::fromUtf8(obs_module_text("RecordingOptions")), "SectionRecording", false);
 	auto *opts_l = qobject_cast<QVBoxLayout *>(opts_body->layout());
 	auto_start_combo_ = new QComboBox(opts_body);
 	auto_start_combo_->addItem(QString::fromUtf8(obs_module_text("AutoStartOff")), (int)MsrAutoStartTrigger::Off);
@@ -258,6 +262,22 @@ void MsrDock::build_ui()
 	split_row->addWidget(split_size_mb_);
 	split_row->addStretch(1);
 	opts_l->addLayout(split_row);
+
+	auto *sr_sep = new QLabel(QString::fromUtf8(obs_module_text("SourceRecordSection")), opts_body);
+	sr_sep->setStyleSheet(QStringLiteral("font-weight: 600; margin-top: 6px;"));
+	opts_l->addWidget(sr_sep);
+	auto *sr_hint = new QLabel(QString::fromUtf8(obs_module_text("SourceRecordHint")), opts_body);
+	sr_hint->setWordWrap(true);
+	opts_l->addWidget(sr_hint);
+	opts_l->addWidget(new QLabel(QString::fromUtf8(obs_module_text("SourceRecordFilter")), opts_body));
+	source_record_filter_edit_ = new QLineEdit(opts_body);
+	source_record_filter_edit_->setPlaceholderText(QStringLiteral("Source Record"));
+	opts_l->addWidget(source_record_filter_edit_);
+	opts_l->addWidget(new QLabel(QString::fromUtf8(obs_module_text("SourceRecordSources")), opts_body));
+	source_record_sources_edit_ = new QLineEdit(opts_body);
+	source_record_sources_edit_->setPlaceholderText(
+		QString::fromUtf8(obs_module_text("SourceRecordSourcesPlaceholder")));
+	opts_l->addWidget(source_record_sources_edit_);
 
 	/* Clipping (replay buffer) — default closed */
 	auto *replay_body = add_section(QString::fromUtf8(obs_module_text("ReplayBuffer")), "SectionReplay", false);
@@ -359,9 +379,18 @@ void MsrDock::build_ui()
 	btn_row->addWidget(replay_btn_);
 	footer_l->addLayout(btn_row);
 
+	auto *sr_row = new QHBoxLayout();
+	source_record_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("StartSourceRecord")), footer);
+	connect(source_record_btn_, &QPushButton::clicked, this, &MsrDock::on_toggle_source_record);
+	sr_row->addWidget(source_record_btn_, 1);
+	footer_l->addLayout(sr_row);
+
 	status_label_ = new QLabel(QString::fromUtf8(obs_module_text("StatusIdle")), footer);
 	status_label_->setWordWrap(true);
 	footer_l->addWidget(status_label_);
+	source_record_status_label_ = new QLabel(QString::fromUtf8(obs_module_text("StatusSourceRecordIdle")), footer);
+	source_record_status_label_->setWordWrap(true);
+	footer_l->addWidget(source_record_status_label_);
 	replay_status_label_ = new QLabel(QString::fromUtf8(obs_module_text("StatusReplayIdle")), footer);
 	replay_status_label_->setWordWrap(true);
 	footer_l->addWidget(replay_status_label_);
@@ -590,6 +619,14 @@ void MsrDock::load_from_controller()
 		split_time_min_->setValue(s.split_time_min);
 	if (split_size_mb_)
 		split_size_mb_->setValue(s.split_size_mb);
+	if (source_record_filter_edit_)
+		source_record_filter_edit_->setText(QString::fromStdString(s.source_record_filter));
+	if (source_record_sources_edit_) {
+		QStringList names;
+		for (const auto &n : s.source_record_sources)
+			names << QString::fromStdString(n);
+		source_record_sources_edit_->setText(names.join(QStringLiteral(", ")));
+	}
 	on_split_mode_changed(split_mode_combo_ ? split_mode_combo_->currentIndex() : 0);
 	rebuild_source_list();
 	rebuild_dest_list();
@@ -658,6 +695,20 @@ void MsrDock::apply_to_controller()
 		if (!d.name.empty())
 			s.destinations.push_back(d);
 	}
+	if (source_record_filter_edit_) {
+		const QString fn = source_record_filter_edit_->text().trimmed();
+		s.source_record_filter = fn.isEmpty() ? "Source Record" : fn.toStdString();
+	}
+	s.source_record_sources.clear();
+	if (source_record_sources_edit_) {
+		const QStringList parts =
+			source_record_sources_edit_->text().split(QLatin1Char(','), Qt::SkipEmptyParts);
+		for (QString part : parts) {
+			part = part.trimmed();
+			if (!part.isEmpty())
+				s.source_record_sources.push_back(part.toStdString());
+		}
+	}
 	c->set_settings(s);
 }
 
@@ -719,10 +770,7 @@ QString MsrDock::format_elapsed(qint64 elapsed_ms)
 	const int h = int(total_sec / 3600);
 	const int m = int((total_sec % 3600) / 60);
 	const int s = int(total_sec % 60);
-	return QStringLiteral("%1:%2:%3")
-		.arg(h, 2, 10, QChar('0'))
-		.arg(m, 2, 10, QChar('0'))
-		.arg(s, 2, 10, QChar('0'));
+	return QStringLiteral("%1:%2:%3").arg(h, 2, 10, QChar('0')).arg(m, 2, 10, QChar('0')).arg(s, 2, 10, QChar('0'));
 }
 
 void MsrDock::sync_elapsed_anchors()
@@ -781,13 +829,13 @@ void MsrDock::refresh_status_labels()
 			if (elapsed_ms >= 10000 && frames == 0) {
 				stream_status_label_->setText(
 					QString::fromUtf8(obs_module_text("StatusStreamNoFrames")).arg(elapsed));
-				stream_status_label_->setStyleSheet(QStringLiteral("color: #e74c3c; font-weight: 600;"));
+				stream_status_label_->setStyleSheet(
+					QStringLiteral("color: #e74c3c; font-weight: 600;"));
 			} else {
 				stream_status_label_->setStyleSheet(QString());
-				stream_status_label_->setText(
-					QString::fromUtf8(obs_module_text("StatusStreaming"))
-						.arg(elapsed)
-						.arg(QString::number(frames)));
+				stream_status_label_->setText(QString::fromUtf8(obs_module_text("StatusStreaming"))
+								      .arg(elapsed)
+								      .arg(QString::number(frames)));
 			}
 		} else {
 			stream_status_label_->setStyleSheet(QString());
@@ -813,6 +861,26 @@ void MsrDock::refresh_status_labels()
 	if (stream_btn_) {
 		stream_btn_->setText(
 			QString::fromUtf8(obs_module_text(streaming ? "StopStreaming" : "StartStreaming")));
+	}
+
+	const bool source_rec = c && c->source_recording();
+	if (source_record_btn_) {
+		source_record_btn_->setText(
+			QString::fromUtf8(obs_module_text(source_rec ? "StopSourceRecord" : "StartSourceRecord")));
+	}
+	if (source_record_status_label_) {
+		if (source_rec) {
+			const auto targets = c->source_record_targets();
+			QStringList names;
+			for (const auto &n : targets)
+				names << QString::fromStdString(n);
+			source_record_status_label_->setText(
+				QString::fromUtf8(obs_module_text("StatusSourceRecordActive"))
+					.arg(names.isEmpty() ? QStringLiteral("…") : names.join(QStringLiteral(", "))));
+		} else {
+			source_record_status_label_->setText(
+				QString::fromUtf8(obs_module_text("StatusSourceRecordIdle")));
+		}
 	}
 }
 
@@ -849,7 +917,6 @@ void MsrDock::on_add_destination()
 	c->set_settings(s);
 	rebuild_dest_list();
 }
-
 
 void MsrDock::on_remove_destination()
 {
@@ -892,6 +959,26 @@ void MsrDock::on_start_stop_clipping()
 		c->stop_replays();
 	else
 		c->start_replays();
+	refresh_status_labels();
+}
+
+void MsrDock::on_toggle_source_record()
+{
+	apply_to_controller();
+	auto *c = MsrController::instance();
+	if (!c)
+		return;
+	c->toggle_source_recording();
+	update_source_record_state(c->source_recording());
+	refresh_status_labels();
+}
+
+void MsrDock::update_source_record_state(bool active)
+{
+	if (source_record_btn_) {
+		source_record_btn_->setText(
+			QString::fromUtf8(obs_module_text(active ? "StopSourceRecord" : "StartSourceRecord")));
+	}
 	refresh_status_labels();
 }
 

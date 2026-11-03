@@ -48,6 +48,12 @@ public:
 	void stop_replays();
 	bool save_replays();
 	bool replaying() const;
+
+	/** Toggle/enable Exeldro Source Record filters on configured sources (not MSR file outputs). */
+	bool source_recording() const;
+	bool set_source_recording(bool enabled);
+	bool toggle_source_recording();
+	std::vector<std::string> source_record_targets() const;
 	/** Apply replay_enabled from current settings (start or stop buffers). */
 	void sync_replays_to_settings();
 
@@ -69,6 +75,7 @@ public:
 
 	using StateCallback = std::function<void(bool recording)>;
 	void set_state_callback(StateCallback cb);
+	void set_source_record_state_callback(StateCallback cb);
 
 	void register_hotkey();
 	void unregister_hotkey();
@@ -83,6 +90,7 @@ private:
 	static void chapter_hotkey_pressed(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed);
 	static void stream_hotkey_pressed(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed);
 	static void replay_hotkey_pressed(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed);
+	static void source_record_hotkey_pressed(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed);
 
 	static void ws_start(obs_data_t *request_data, obs_data_t *response_data, void *priv);
 	static void ws_stop(obs_data_t *request_data, obs_data_t *response_data, void *priv);
@@ -100,6 +108,10 @@ private:
 	static void ws_save_replay(obs_data_t *request_data, obs_data_t *response_data, void *priv);
 	static void ws_start_replay(obs_data_t *request_data, obs_data_t *response_data, void *priv);
 	static void ws_stop_replay(obs_data_t *request_data, obs_data_t *response_data, void *priv);
+	static void ws_source_record_status(obs_data_t *request_data, obs_data_t *response_data, void *priv);
+	static void ws_start_source_record(obs_data_t *request_data, obs_data_t *response_data, void *priv);
+	static void ws_stop_source_record(obs_data_t *request_data, obs_data_t *response_data, void *priv);
+	static void ws_toggle_source_record(obs_data_t *request_data, obs_data_t *response_data, void *priv);
 	static void ws_vertical_add_source(obs_data_t *request_data, obs_data_t *response_data, void *priv);
 	static void ws_vertical_status(obs_data_t *request_data, obs_data_t *response_data, void *priv);
 	static void ws_vertical_set_item(obs_data_t *request_data, obs_data_t *response_data, void *priv);
@@ -109,6 +121,7 @@ private:
 
 	std::string settings_path() const;
 	void notify_state();
+	void notify_source_record_state();
 
 	mutable std::mutex mutex_;
 	MsrSettings settings_;
@@ -120,9 +133,11 @@ private:
 	obs_hotkey_id chapter_hotkey_id_ = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id stream_hotkey_id_ = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id replay_hotkey_id_ = OBS_INVALID_HOTKEY_ID;
+	obs_hotkey_id source_record_hotkey_id_ = OBS_INVALID_HOTKEY_ID;
 	bool auto_started_from_record_ = false;
 	bool auto_started_from_stream_ = false;
 	void *ws_vendor_ = nullptr;
 	StateCallback state_cb_;
+	StateCallback source_record_state_cb_;
 	static MsrController *instance_;
 };

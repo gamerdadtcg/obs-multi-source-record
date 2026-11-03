@@ -16,6 +16,7 @@ const UUID_TOGGLE = "com.travvvman.obs-multi-source-record.toggle";
 const UUID_PAUSE = "com.travvvman.obs-multi-source-record.pause";
 const UUID_CHAPTER = "com.travvvman.obs-multi-source-record.chapter";
 const UUID_SAVE_REPLAY = "com.travvvman.obs-multi-source-record.save-replay";
+const UUID_SOURCE_RECORD = "com.travvvman.obs-multi-source-record.source-record";
 
 function sendElgato(msg) {
   if (elgato && elgato.readyState === WebSocket.OPEN) elgato.send(JSON.stringify(msg));
@@ -129,6 +130,8 @@ async function refresh(context) {
     const action = actionByContext[context];
     if (action === UUID_PAUSE) {
       setState(context, data.paused ? 1 : 0);
+    } else if (action === UUID_SOURCE_RECORD) {
+      setState(context, data.source_recording ? 1 : 0);
     } else {
       setState(context, data.recording ? 1 : 0);
     }
@@ -148,6 +151,9 @@ async function onKey(context) {
       await vendor(settings, "add_chapter");
     } else if (action === UUID_SAVE_REPLAY) {
       await vendor(settings, "save_replay");
+    } else if (action === UUID_SOURCE_RECORD) {
+      const data = await vendor(settings, "toggle_source_record");
+      setState(context, data.source_recording ? 1 : 0);
     } else {
       const data = await vendor(settings, "toggle");
       setState(context, data.recording ? 1 : 0);

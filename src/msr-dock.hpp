@@ -62,7 +62,9 @@ public slots:
 	void on_remove_destination();
 	void on_save_replay();
 	void on_start_stop_clipping();
+	void on_toggle_source_record();
 	void update_recording_state(bool recording);
+	void update_source_record_state(bool active);
 	void on_split_mode_changed(int index);
 	void refresh_status_labels();
 
@@ -117,7 +119,11 @@ private:
 	QPushButton *replay_btn_ = nullptr;
 	QPushButton *clipping_btn_ = nullptr;
 	QPushButton *stream_btn_ = nullptr;
+	QPushButton *source_record_btn_ = nullptr;
+	QLineEdit *source_record_filter_edit_ = nullptr;
+	QLineEdit *source_record_sources_edit_ = nullptr;
 	QLabel *status_label_ = nullptr;
+	QLabel *source_record_status_label_ = nullptr;
 	QLabel *stream_status_label_ = nullptr;
 	QLabel *replay_status_label_ = nullptr;
 	QTimer *status_timer_ = nullptr;
