@@ -9,6 +9,7 @@ the Free Software Foundation; either version 2 of the License, or
 */
 
 #include "msr-dock.hpp"
+#include "msr-x-live.hpp"
 #include "msr-controller.hpp"
 #include "plugin-support.h"
 
@@ -40,6 +41,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QDateTime>
 
 #include <string>
+#include <memory>
 
 namespace {
 
@@ -348,6 +350,42 @@ void MsrDock::build_ui()
 	stream_status_label_ = new QLabel(QString::fromUtf8(obs_module_text("StatusStreamIdle")), multistream_box_);
 	stream_status_label_->setWordWrap(true);
 	ms->addWidget(stream_status_label_);
+
+	/* X Live — scaffold (OAuth + Livestream API); default closed; no Go Live yet */
+	x_live_box_ = add_section(QString::fromUtf8(obs_module_text("XLiveSection")), "SectionXLive", false);
+	auto *xl = qobject_cast<QVBoxLayout *>(x_live_box_->layout());
+	auto *xl_hint = new QLabel(QString::fromUtf8(obs_module_text("XLiveHint")), x_live_box_);
+	xl_hint->setWordWrap(true);
+	xl->addWidget(xl_hint);
+	x_live_client_id_ = new QLineEdit(x_live_box_);
+	x_live_client_id_->setPlaceholderText(QString::fromUtf8(obs_module_text("XLiveClientId")));
+	x_live_client_id_->setEchoMode(QLineEdit::Password);
+	xl->addWidget(new QLabel(QString::fromUtf8(obs_module_text("XLiveClientId")), x_live_box_));
+	xl->addWidget(x_live_client_id_);
+	x_live_title_ = new QLineEdit(x_live_box_);
+	x_live_title_->setPlaceholderText(QString::fromUtf8(obs_module_text("XLiveTitle")));
+	xl->addWidget(new QLabel(QString::fromUtf8(obs_module_text("XLiveTitle")), x_live_box_));
+	xl->addWidget(x_live_title_);
+	auto *xl_btns = new QHBoxLayout();
+	x_live_signin_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("XLiveSignIn")), x_live_box_);
+	x_live_signout_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("XLiveSignOut")), x_live_box_);
+	x_live_sync_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("XLiveSyncSource")), x_live_box_);
+	xl_btns->addWidget(x_live_signin_btn_);
+	xl_btns->addWidget(x_live_signout_btn_);
+	xl->addLayout(xl_btns);
+	xl->addWidget(x_live_sync_btn_);
+	connect(x_live_signin_btn_, &QPushButton::clicked, this, &MsrDock::on_x_live_sign_in);
+	connect(x_live_signout_btn_, &QPushButton::clicked, this, &MsrDock::on_x_live_sign_out);
+	connect(x_live_sync_btn_, &QPushButton::clicked, this, &MsrDock::on_x_live_sync_source);
+	x_live_status_ = new QLabel(QString::fromUtf8(obs_module_text("XLiveStatus")), x_live_box_);
+	x_live_status_->setWordWrap(true);
+	xl->addWidget(x_live_status_);
+	auto *xl_chat = new QLabel(QString::fromUtf8(obs_module_text("XLiveChatPlaceholder")), x_live_box_);
+	xl_chat->setWordWrap(true);
+	xl_chat->setStyleSheet(QStringLiteral("color: #888;"));
+	xl->addWidget(xl_chat);
+	if (!x_live_)
+		x_live_ = std::make_unique<MsrXLiveClient>();
 
 	root->addStretch(1);
 	outer_scroll_->setWidget(content);
@@ -1075,4 +1113,39 @@ void MsrDock::hideEvent(QHideEvent *event)
 {
 	save_window_geometry();
 	QWidget::hideEvent(event);
+}
+
+void MsrDock::on_x_live_sign_in()
+{
+	if (!x_live_)
+		x_live_ = std::make_unique<MsrXLiveClient>();
+	x_live_->set_client_id(x_live_client_id_ ? x_live_client_id_->text().trimmed().toStdString() : "");
+	x_live_->begin_sign_in();
+	if (x_live_status_)
+		x_live_status_->setText(QString::fromStdString(x_live_->status_text()));
+}
+
+void MsrDock::on_x_live_sign_out()
+{
+	if (!x_live_)
+		return;
+	x_live_->sign_out();
+	if (x_live_status_)
+		x_live_status_->setText(QString::fromStdString(x_live_->status_text()));
+}
+
+void MsrDock::on_x_live_sync_source()
+{
+	if (!x_live_)
+		x_live_ = std::make_unique<MsrXLiveClient>();
+	std::string url;
+	size_t key_len = 0;
+	x_live_->sync_source("MSR OBS", &url, &key_len);
+	if (x_live_status_) {
+		QString msg = QString::fromStdString(x_live_->status_text());
+		if (!url.empty())
+			msg += QStringLiteral(" · server set (key_len=%1)").arg((qulonglong)key_len);
+		x_live_status_->setText(msg);
+	}
+	/* Phase 1 will copy url/key into dest row without logging the key. */
 }

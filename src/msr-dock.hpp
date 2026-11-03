@@ -13,6 +13,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QWidget>
 #include <QPointer>
 #include <vector>
+#include <memory>
 
 class QVBoxLayout;
 class QCheckBox;
@@ -24,6 +25,7 @@ class QSpinBox;
 class QTimer;
 class QToolButton;
 class QScrollArea;
+class MsrXLiveClient;
 
 struct MsrSourceRow {
 	QCheckBox *enabled = nullptr;
@@ -67,6 +69,9 @@ public slots:
 	void update_source_record_state(bool active);
 	void on_split_mode_changed(int index);
 	void refresh_status_labels();
+	void on_x_live_sign_in();
+	void on_x_live_sign_out();
+	void on_x_live_sync_source();
 
 protected:
 	void showEvent(QShowEvent *event) override;
@@ -135,6 +140,14 @@ private:
 	bool was_replaying_ = false;
 	QWidget *advanced_box_ = nullptr;
 	QWidget *multistream_box_ = nullptr;
+	QWidget *x_live_box_ = nullptr;
+	QLineEdit *x_live_client_id_ = nullptr;
+	QLineEdit *x_live_title_ = nullptr;
+	QLabel *x_live_status_ = nullptr;
+	QPushButton *x_live_signin_btn_ = nullptr;
+	QPushButton *x_live_signout_btn_ = nullptr;
+	QPushButton *x_live_sync_btn_ = nullptr;
+	std::unique_ptr<MsrXLiveClient> x_live_;
 
 	static QString format_elapsed(qint64 elapsed_ms);
 	void sync_elapsed_anchors();
