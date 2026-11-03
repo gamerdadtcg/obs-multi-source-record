@@ -127,10 +127,24 @@ bool MsrStreamSession::setup_encoders_and_output()
 	obs_data_t *vsettings = obs_data_create();
 	obs_data_set_int(vsettings, "bitrate", vbr);
 	obs_data_set_string(vsettings, "rate_control", "CBR");
-	obs_data_set_int(vsettings, "keyint_sec", 2);
+	/* X Live Studio: H.264 Main/High, keyint ~3s. Repeat SPS/PPS so late
+	 * preview joiners (source tile) can decode instead of staying on logo. */
+	const bool x_host = dest_.server_url.find("live.x.com") != std::string::npos ||
+			  dest_.server_url.find("live.twitter.com") != std::string::npos;
+	obs_data_set_int(vsettings, "keyint_sec", x_host ? 3 : 2);
 	obs_data_set_string(vsettings, "preset", "veryfast");
 	obs_data_set_string(vsettings, "tune", "zerolatency");
+	obs_data_set_string(vsettings, "profile", "high");
+	obs_data_set_int(vsettings, "bf", 0);
+	obs_data_set_string(vsettings, "x264opts", "repeat-headers=1:aud=1:nal-hrd=cbr:force-cfr=1");
 	obs_data_set_string(vsettings, "preset2", "p5");
+	if (x_host && dest_.orientation == MsrOrientation::Vertical) {
+		obs_log(LOG_WARNING,
+			"stream '%s': X Live Studio recommends 1920x1080 16:9; vertical "
+			"%dx%d may show the X logo in the source preview even while "
+			"frames are flowing — check Encoder bitrate meters / private test",
+			dest_.name.c_str(), width_, height_);
+	}
 
 	const std::string tag = sanitize_name(dest_.name) + "-" + orientation_token(dest_.orientation);
 	std::string enc_name = "msr-stream-venc-" + tag;

@@ -785,7 +785,9 @@ void MsrDock::refresh_status_labels()
 			} else {
 				stream_status_label_->setStyleSheet(QString());
 				stream_status_label_->setText(
-					QString::fromUtf8(obs_module_text("StatusStreaming")).arg(elapsed));
+					QString::fromUtf8(obs_module_text("StatusStreaming"))
+						.arg(elapsed)
+						.arg(QString::number(frames)));
 			}
 		} else {
 			stream_status_label_->setStyleSheet(QString());
