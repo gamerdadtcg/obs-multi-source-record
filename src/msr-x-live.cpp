@@ -6,7 +6,16 @@ GPL-2.0-or-later
 #include "msr-x-live.hpp"
 #include "plugin-support.h"
 
-#include <obs-module.h>
+/* Avoid including obs-module.h here: on MSVC it redefines blogva vs plugin-support.h. */
+#ifndef LOG_ERROR
+#define LOG_ERROR 100
+#endif
+#ifndef LOG_WARNING
+#define LOG_WARNING 200
+#endif
+#ifndef LOG_INFO
+#define LOG_INFO 300
+#endif
 
 MsrXLiveClient::MsrXLiveClient()
 {
