@@ -26,12 +26,8 @@ GPL-2.0-or-later
 #include <fstream>
 #include <sstream>
 
-/* Avoid obs-module.h here: on MSVC it redefines blogva vs plugin-support.h. */
-extern "C" {
-char *obs_module_config_path(const char *file);
-void bfree(void *ptr);
-}
-
+/* Avoid obs-module.h here: on MSVC it redefines blogva vs plugin-support.h.
+ * Token file path is injected via set_tokens_path() from the dock. */
 #ifndef LOG_ERROR
 #define LOG_ERROR 100
 #endif
@@ -51,7 +47,6 @@ MsrXLiveClient::MsrXLiveClient(QObject *parent) : QObject(parent)
 	status_timer_ = new QTimer(this);
 	status_timer_->setInterval(60000);
 	connect(status_timer_, &QTimer::timeout, this, &MsrXLiveClient::on_status_timer);
-	load_tokens();
 }
 
 MsrXLiveClient::~MsrXLiveClient()
@@ -185,18 +180,18 @@ void MsrXLiveClient::clear_tokens_locked()
 	live_ = false;
 }
 
-std::string MsrXLiveClient::tokens_path() const
+void MsrXLiveClient::set_tokens_path(std::string path)
 {
-	char *path = obs_module_config_path("x-live-tokens.json");
-	std::string out = path ? path : "";
-	if (path)
-		bfree(path);
-	return out;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		tokens_path_ = std::move(path);
+	}
+	load_tokens();
 }
 
 void MsrXLiveClient::load_tokens()
 {
-	const std::string path = tokens_path();
+	const std::string path = tokens_path_;
 	if (path.empty())
 		return;
 	std::ifstream in(path);
@@ -228,7 +223,7 @@ void MsrXLiveClient::load_tokens()
 
 void MsrXLiveClient::save_tokens() const
 {
-	const std::string path = tokens_path();
+	const std::string path = tokens_path_;
 	if (path.empty())
 		return;
 	QJsonObject o;
@@ -254,7 +249,7 @@ void MsrXLiveClient::save_tokens() const
 
 void MsrXLiveClient::erase_token_file() const
 {
-	const std::string path = tokens_path();
+	const std::string path = tokens_path_;
 	if (path.empty())
 		return;
 	QFile::remove(QString::fromStdString(path));

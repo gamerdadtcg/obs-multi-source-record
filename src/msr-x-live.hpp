@@ -43,6 +43,9 @@ public:
 	void set_cached_source_id(std::string source_id);
 	std::string cached_source_id() const;
 
+	/** Absolute path for token JSON (set by dock via obs_module_config_path). */
+	void set_tokens_path(std::string path);
+
 	State state() const;
 	std::string status_text() const;
 	std::string last_error() const;
@@ -98,7 +101,7 @@ private:
 	void load_tokens();
 	void save_tokens() const;
 	void erase_token_file() const;
-	std::string tokens_path() const;
+	std::string tokens_path_;
 	static std::string base64url(const QByteArray &in);
 	static QByteArray random_bytes(int n);
 	static bool looks_like_whitelist_error(int status, const QByteArray &body);

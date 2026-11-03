@@ -1160,6 +1160,11 @@ void MsrDock::ensure_x_live()
 	if (x_live_)
 		return;
 	x_live_ = new MsrXLiveClient(this);
+	char *tok = obs_module_config_path("x-live-tokens.json");
+	if (tok) {
+		x_live_->set_tokens_path(tok);
+		bfree(tok);
+	}
 	connect(x_live_, &MsrXLiveClient::statusChanged, this, &MsrDock::on_x_live_status_changed);
 	connect(x_live_, &MsrXLiveClient::chatHistoryReady, this, [this](QString text) {
 		if (x_live_chat_view_)
