@@ -9,6 +9,8 @@ the Free Software Foundation; either version 2 of the License, or
 */
 
 #include "msr-controller.hpp"
+
+#include <cstdint>
 #include "msr-stream-session.hpp"
 #include "msr-vertical-canvas.hpp"
 #include "msr-vertical-audio.hpp"
@@ -456,6 +458,22 @@ bool MsrController::streaming() const
 			return true;
 	}
 	return false;
+}
+
+uint64_t MsrController::stream_total_frames_min() const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	uint64_t min_frames = UINT64_MAX;
+	bool any = false;
+	for (const auto &s : stream_sessions_) {
+		if (!s || !s->active())
+			continue;
+		any = true;
+		const uint64_t f = s->total_frames();
+		if (f < min_frames)
+			min_frames = f;
+	}
+	return any ? min_frames : 0;
 }
 
 std::vector<std::string> MsrController::active_stream_names() const

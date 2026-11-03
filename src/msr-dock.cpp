@@ -775,10 +775,20 @@ void MsrDock::refresh_status_labels()
 
 	if (stream_status_label_) {
 		if (streaming && stream_started_ms_ > 0) {
-			const QString elapsed = format_elapsed(now - stream_started_ms_);
-			stream_status_label_->setText(
-				QString::fromUtf8(obs_module_text("StatusStreaming")).arg(elapsed));
+			const qint64 elapsed_ms = now - stream_started_ms_;
+			const QString elapsed = format_elapsed(elapsed_ms);
+			const uint64_t frames = c ? c->stream_total_frames_min() : 0;
+			if (elapsed_ms >= 10000 && frames == 0) {
+				stream_status_label_->setText(
+					QString::fromUtf8(obs_module_text("StatusStreamNoFrames")).arg(elapsed));
+				stream_status_label_->setStyleSheet(QStringLiteral("color: #e74c3c; font-weight: 600;"));
+			} else {
+				stream_status_label_->setStyleSheet(QString());
+				stream_status_label_->setText(
+					QString::fromUtf8(obs_module_text("StatusStreaming")).arg(elapsed));
+			}
 		} else {
+			stream_status_label_->setStyleSheet(QString());
 			stream_status_label_->setText(QString::fromUtf8(obs_module_text("StatusStreamIdle")));
 		}
 	}

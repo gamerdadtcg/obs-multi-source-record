@@ -14,20 +14,8 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include <obs-module.h>
 #include <cstring>
-#include <initializer_list>
 
 namespace {
-
-bool encoder_available(const char *id)
-{
-	const char *val = nullptr;
-	int i = 0;
-	while (obs_enum_encoder_types(i++, &val)) {
-		if (strcmp(val, id) == 0)
-			return true;
-	}
-	return false;
-}
 
 std::string sanitize_name(const std::string &name)
 {
@@ -74,34 +62,10 @@ size_t MsrStreamSession::first_mixer_index(uint32_t mask)
 
 const char *MsrStreamSession::resolve_video_encoder_id() const
 {
-	const std::string &pref = settings_.video_encoder;
-	auto try_ids = [](std::initializer_list<const char *> ids) -> const char * {
-		for (const char *id : ids) {
-			if (encoder_available(id))
-				return id;
-		}
-		return nullptr;
-	};
-
-	if (pref == "nvenc") {
-		const char *id = try_ids({"obs_nvenc_h264_tex", "jim_nvenc", "ffmpeg_nvenc"});
-		if (id)
-			return id;
-	} else if (pref == "amf") {
-		const char *id = try_ids({"h264_texture_amf"});
-		if (id)
-			return id;
-	} else if (pref == "qsv") {
-		const char *id = try_ids({"obs_qsv11_v2", "obs_qsv11"});
-		if (id)
-			return id;
-	} else if (pref == "x264") {
-		return "obs_x264";
-	}
-
-	const char *id = try_ids({"obs_nvenc_h264_tex", "jim_nvenc", "ffmpeg_nvenc", "h264_texture_amf", "obs_qsv11_v2",
-				  "obs_qsv11", "obs_x264"});
-	return id ? id : "obs_x264";
+	/* Multistream always uses software x264 for reliable RTMP start across GPUs.
+	 * Recording still honors the dock encoder setting separately. */
+	(void)settings_;
+	return "obs_x264";
 }
 
 bool MsrStreamSession::setup_video()
@@ -142,21 +106,15 @@ bool MsrStreamSession::setup_video()
 		height_ = ovi.output_height;
 	}
 
-	if (dest_.orientation == MsrOrientation::Vertical) {
-		auto *vc = MsrVerticalCanvas::instance();
-		audio_output_ = vc ? vc->audio() : nullptr;
-		if (!audio_output_) {
-			obs_log(LOG_ERROR, "vertical audio mix missing for stream '%s'", dest_.name.c_str());
-			return false;
-		}
-		obs_log(LOG_INFO, "stream '%s' using vertical private audio mix", dest_.name.c_str());
-	} else {
-		audio_output_ = obs_get_audio();
-		if (!audio_output_) {
-			obs_log(LOG_ERROR, "main audio missing for stream '%s'", dest_.name.c_str());
-			return false;
-		}
+	/* Destinations always take OBS main mixer tracks (Advanced Audio Properties
+	 * tracks 1–6 via obs_get_audio()). Private vertical mix stays for vertical
+	 * recording only — not multistream. */
+	audio_output_ = obs_get_audio();
+	if (!audio_output_) {
+		obs_log(LOG_ERROR, "main audio missing for stream '%s'", dest_.name.c_str());
+		return false;
 	}
+	obs_log(LOG_INFO, "stream '%s' using OBS main audio mixer tracks", dest_.name.c_str());
 	return true;
 }
 
@@ -190,33 +148,22 @@ bool MsrStreamSession::setup_encoders_and_output()
 	obs_encoder_set_video(video_encoder_, video_output_);
 	obs_encoder_set_scaled_size(video_encoder_, width_, height_);
 
-	/* Vertical private mix only feeds mixer index 0. */
+	/* RTMP is single-audio-track: use the first checked OBS main mixer track. */
 	uint32_t mask = dest_.audio_track_mask ? dest_.audio_track_mask : 1u;
-	if (dest_.orientation == MsrOrientation::Vertical)
-		mask = 1u;
-	size_t attached = 0;
-	for (size_t mix = 0; mix < MAX_AUDIO_MIXES; mix++) {
-		if (!(mask & (1u << mix)))
-			continue;
-		obs_data_t *asettings = obs_data_create();
-		obs_data_set_int(asettings, "bitrate", abr);
-		std::string aenc_name = "msr-stream-aenc-" + tag + "-t" + std::to_string(mix + 1);
-		obs_encoder_t *aenc =
-			obs_audio_encoder_create("ffmpeg_aac", aenc_name.c_str(), asettings, mix, nullptr);
-		obs_data_release(asettings);
-		if (!aenc) {
-			obs_log(LOG_ERROR, "failed to create stream audio encoder track %zu for '%s'", mix + 1,
-				dest_.name.c_str());
-			return false;
-		}
-		obs_encoder_set_audio(aenc, audio_output_);
-		audio_encoders_.push_back(aenc);
-		attached++;
-	}
-	if (attached == 0) {
-		obs_log(LOG_ERROR, "stream '%s' audio_track_mask selected no mixer tracks", dest_.name.c_str());
+	const size_t mix = first_mixer_index(mask);
+	obs_data_t *asettings = obs_data_create();
+	obs_data_set_int(asettings, "bitrate", abr);
+	std::string aenc_name = "msr-stream-aenc-" + tag + "-t" + std::to_string(mix + 1);
+	obs_encoder_t *aenc =
+		obs_audio_encoder_create("ffmpeg_aac", aenc_name.c_str(), asettings, mix, nullptr);
+	obs_data_release(asettings);
+	if (!aenc) {
+		obs_log(LOG_ERROR, "failed to create stream audio encoder track %zu for '%s'", mix + 1,
+			dest_.name.c_str());
 		return false;
 	}
+	obs_encoder_set_audio(aenc, audio_output_);
+	audio_encoders_.push_back(aenc);
 
 	/* rtmp_output has OBS_OUTPUT_SERVICE — server/key must live on an attached
 	 * rtmp_custom service. Settings alone make obs_output_start fail immediately
@@ -244,9 +191,16 @@ bool MsrStreamSession::setup_encoders_and_output()
 	obs_output_set_video_encoder(rtmp_output_, video_encoder_);
 	for (size_t i = 0; i < audio_encoders_.size(); i++)
 		obs_output_set_audio_encoder(rtmp_output_, audio_encoders_[i], i);
-	obs_log(LOG_INFO, "stream '%s' audio tracks mask=0x%x (%zu encoder(s))", dest_.name.c_str(), (unsigned)mask,
-		audio_encoders_.size());
+	obs_log(LOG_INFO, "stream '%s' OBS audio track %zu (mask=0x%x)", dest_.name.c_str(), mix + 1,
+		(unsigned)mask);
 	return true;
+}
+
+uint64_t MsrStreamSession::total_frames() const
+{
+	if (!rtmp_output_)
+		return 0;
+	return (uint64_t)obs_output_get_total_frames(rtmp_output_);
 }
 
 void MsrStreamSession::clear_audio_encoders()

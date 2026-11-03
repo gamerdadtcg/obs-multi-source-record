@@ -16,6 +16,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include <obs-hotkey.h>
 
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -60,6 +61,8 @@ public:
 	void stop_streams();
 	bool toggle_streams();
 	bool streaming() const;
+	/** Minimum obs_output total frames across active MSR stream sessions. */
+	uint64_t stream_total_frames_min() const;
 	std::vector<std::string> active_stream_names() const;
 
 	std::vector<std::string> active_outputs() const;

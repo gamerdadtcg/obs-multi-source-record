@@ -29,6 +29,8 @@ public:
 	bool start();
 	void stop();
 	bool active() const { return active_.load(); }
+	/** Interleaved video packets sent on the RTMP output (0 if not started). */
+	uint64_t total_frames() const;
 
 	const std::string &name() const { return dest_.name; }
 	MsrOrientation orientation() const { return dest_.orientation; }

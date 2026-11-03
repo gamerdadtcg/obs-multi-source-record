@@ -4,7 +4,7 @@ Copyright (C) 2026 Travvvman
 
 Private vertical audio mix: sums per-source capture from the vertical
 program scene, excluding sources with msr_vertical_audio=false.
-Used by vertical record and vertical streams so main/horizontal audio
+Used by vertical recording so main/horizontal audio
 is unchanged.
 */
 #pragma once
