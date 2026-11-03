@@ -244,18 +244,19 @@ bool MsrVerticalAudioMix::audio_input_callback(void *param, uint64_t start_ts_in
 {
 	UNUSED_PARAMETER(end_ts_in);
 	auto *self = static_cast<MsrVerticalAudioMix *>(param);
-	if (!self || self->closing_.load()) {
-		*out_ts = start_ts_in;
-		return false;
-	}
-	std::lock_guard<std::mutex> lock(self->mutex_);
-	bool any = false;
-	for (Cap &c : self->caps_) {
-		if (c.fifo.has_frames()) {
-			c.fifo.mix_pop_into(mixes, mixers, 2);
-			any = true;
-		}
-	}
+	/* Always return true and lock to the private audio_output clock.
+	 * Returning false when the FIFO is empty (silent scene / startup)
+	 * starves the AAC encoder; rtmp_output interleave then never starts
+	 * (needs audio+video), so Total frames output stays 0 while X shows
+	 * resolution metadata with bitrate/fps/audio dashes. Matches MsrSession. */
 	*out_ts = start_ts_in;
-	return any;
+	if (!self || self->closing_.load())
+		return true;
+
+	std::lock_guard<std::mutex> lock(self->mutex_);
+	for (Cap &c : self->caps_) {
+		if (c.fifo.has_frames())
+			c.fifo.mix_pop_into(mixes, mixers, 2);
+	}
+	return true;
 }
