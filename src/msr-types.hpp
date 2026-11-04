@@ -58,7 +58,7 @@ struct MsrStreamDestination {
 
 struct MsrSettings {
 	std::string output_folder;
-	std::string filename_pattern = "{source}_{orientation}_{date}_{time}";
+	std::string filename_pattern = "{source} {date} {time}";
 	std::string container = "mkv";      /* mkv | mp4 */
 	std::string video_encoder = "auto"; /* auto | nvenc | amf | qsv | x264 */
 	int video_bitrate_kbps = 8000;

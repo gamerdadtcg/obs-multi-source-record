@@ -213,7 +213,7 @@ void MsrDock::build_ui()
 	output_l->addLayout(folder_row);
 	output_l->addWidget(new QLabel(QString::fromUtf8(obs_module_text("FilenamePattern")), output_body));
 	pattern_edit_ = new QLineEdit(output_body);
-	pattern_edit_->setPlaceholderText(QStringLiteral("{source}_{orientation}_{date}_{time}"));
+	pattern_edit_->setPlaceholderText(QStringLiteral("{source} {date} {time}"));
 	output_l->addWidget(pattern_edit_);
 	auto *fmt_row = new QHBoxLayout();
 	container_combo_ = new QComboBox(output_body);
@@ -642,7 +642,7 @@ void MsrDock::apply_to_controller()
 	s.output_folder = folder_edit_->text().trimmed().toStdString();
 	s.filename_pattern = pattern_edit_->text().trimmed().toStdString();
 	if (s.filename_pattern.empty())
-		s.filename_pattern = "{source}_{orientation}_{date}_{time}";
+		s.filename_pattern = "{source} {date} {time}";
 	s.container = container_combo_->currentData().toString().toStdString();
 	s.video_encoder = encoder_combo_->currentData().toString().toStdString();
 	s.video_bitrate_kbps = video_bitrate_->value();
@@ -798,6 +798,13 @@ void MsrDock::sync_elapsed_anchors()
 	if (!replaying)
 		replay_started_ms_ = 0;
 	was_replaying_ = replaying;
+
+	const bool source_rec = c && c->source_recording();
+	if (source_rec && !was_source_recording_)
+		source_record_started_ms_ = now;
+	if (!source_rec)
+		source_record_started_ms_ = 0;
+	was_source_recording_ = source_rec;
 }
 
 void MsrDock::refresh_status_labels()
@@ -869,15 +876,21 @@ void MsrDock::refresh_status_labels()
 			QString::fromUtf8(obs_module_text(source_rec ? "StopSourceRecord" : "StartSourceRecord")));
 	}
 	if (source_record_status_label_) {
-		if (source_rec) {
+		if (source_rec && source_record_started_ms_ > 0) {
+			const QString elapsed = format_elapsed(now - source_record_started_ms_);
 			const auto targets = c->source_record_targets();
 			QStringList names;
 			for (const auto &n : targets)
 				names << QString::fromStdString(n);
-			source_record_status_label_->setText(
-				QString::fromUtf8(obs_module_text("StatusSourceRecordActive"))
-					.arg(names.isEmpty() ? QStringLiteral("…") : names.join(QStringLiteral(", "))));
+			const QString timer_line =
+				QString::fromUtf8(obs_module_text("StatusSourceRecordActive")).arg(elapsed);
+			const QString targets_line =
+				QString::fromUtf8(obs_module_text("StatusSourceRecordTargets"))
+					.arg(names.isEmpty() ? QStringLiteral("…") : names.join(QStringLiteral(", ")));
+			source_record_status_label_->setStyleSheet(QStringLiteral("color: #e74c3c; font-weight: 600;"));
+			source_record_status_label_->setText(timer_line + QStringLiteral("\n") + targets_line);
 		} else {
+			source_record_status_label_->setStyleSheet(QString());
 			source_record_status_label_->setText(
 				QString::fromUtf8(obs_module_text("StatusSourceRecordIdle")));
 		}

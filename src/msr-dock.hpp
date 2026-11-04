@@ -130,9 +130,11 @@ private:
 	qint64 record_started_ms_ = 0;
 	qint64 stream_started_ms_ = 0;
 	qint64 replay_started_ms_ = 0;
+	qint64 source_record_started_ms_ = 0;
 	bool was_recording_ = false;
 	bool was_streaming_ = false;
 	bool was_replaying_ = false;
+	bool was_source_recording_ = false;
 	QWidget *advanced_box_ = nullptr;
 	QWidget *multistream_box_ = nullptr;
 

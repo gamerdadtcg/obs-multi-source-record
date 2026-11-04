@@ -53,6 +53,8 @@ public:
 	bool source_recording() const;
 	bool set_source_recording(bool enabled);
 	bool toggle_source_recording();
+	/** Stamp Source Record filters with date + 12h AM/PM filename pattern. */
+	size_t apply_source_record_filename_formats();
 	std::vector<std::string> source_record_targets() const;
 	/** Apply replay_enabled from current settings (start or stop buffers). */
 	void sync_replays_to_settings();

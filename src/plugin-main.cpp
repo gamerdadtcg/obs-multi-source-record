@@ -47,6 +47,7 @@ static void frontend_event(enum obs_frontend_event event, void *)
 
 	if (event == OBS_FRONTEND_EVENT_PROFILE_CHANGED || event == OBS_FRONTEND_EVENT_FINISHED_LOADING) {
 		c->load_settings();
+		c->apply_source_record_filename_formats();
 		if (dock_widget)
 			QMetaObject::invokeMethod(dock_widget, "refresh_sources", Qt::QueuedConnection);
 		if (auto *vc = MsrVerticalCanvas::instance()) {

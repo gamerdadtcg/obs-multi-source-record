@@ -186,6 +186,11 @@ function main() {
       settingsByContext[context] = (payload && payload.settings) || {};
       actionByContext[context] = action || UUID_TOGGLE;
       refresh(context);
+      if (!global.__msrPoll) {
+        global.__msrPoll = setInterval(() => {
+          for (const ctx of Object.keys(actionByContext)) refresh(ctx);
+        }, 2000);
+      }
     } else if (event === "didReceiveSettings") {
       settingsByContext[context] = (payload && payload.settings) || {};
     } else if (event === "keyDown") {

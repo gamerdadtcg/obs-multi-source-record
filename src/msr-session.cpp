@@ -197,10 +197,22 @@ std::string MsrSession::build_output_path() const
 	char date_buf[32];
 	char time_buf[32];
 	std::strftime(date_buf, sizeof(date_buf), "%Y-%m-%d", &tm_buf);
-	std::strftime(time_buf, sizeof(time_buf), "%H-%M-%S", &tm_buf);
+	/* 12-hour clock with AM/PM; hyphens instead of colons (Windows-safe). */
+	std::strftime(time_buf, sizeof(time_buf), "%I-%M-%S %p", &tm_buf);
 
 	std::string pattern = settings_.filename_pattern;
-	const std::string src = sanitize_name(source_name_);
+	/* Keep spaces in source names for readable files; strip Windows-illegal chars only. */
+	std::string src;
+	src.reserve(source_name_.size());
+	for (unsigned char c : source_name_) {
+		if (c < 32 || std::strchr("<>:\"/|?*", (char)c))
+			continue;
+		src.push_back((char)c);
+	}
+	while (!src.empty() && (src.back() == ' ' || src.back() == '.'))
+		src.pop_back();
+	if (src.empty())
+		src = sanitize_name(source_name_);
 	const std::string ori = orientation_token(orientation_);
 
 	auto replace_all = [](std::string &s, const std::string &from, const std::string &to) {

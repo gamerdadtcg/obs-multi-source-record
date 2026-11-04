@@ -27,6 +27,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <cstring>
 
 MsrController *MsrController::instance_ = nullptr;
 
@@ -127,6 +128,9 @@ void MsrController::load_settings()
 	const char *pattern = obs_data_get_string(data, "filename_pattern");
 	if (pattern && *pattern)
 		settings_.filename_pattern = pattern;
+	/* Migrate legacy default (24h underscore pattern) to date + 12h AM/PM. */
+	if (settings_.filename_pattern == "{source}_{orientation}_{date}_{time}")
+		settings_.filename_pattern = "{source} {date} {time}";
 	const char *container = obs_data_get_string(data, "container");
 	if (container && *container)
 		settings_.container = container;
@@ -1021,6 +1025,81 @@ bool MsrController::source_recording() const
 	return false;
 }
 
+namespace {
+
+std::string windows_safe_source_label(const std::string &name)
+{
+	std::string out;
+	out.reserve(name.size());
+	for (unsigned char c : name) {
+		if (c < 32 || std::strchr("<>:\"/|?*", (char)c))
+			continue;
+		out.push_back((char)c);
+	}
+	while (!out.empty() && (out.back() == ' ' || out.back() == '.'))
+		out.pop_back();
+	if (out.empty())
+		out = "source";
+	return out;
+}
+
+/** Exeldro Source Record / OBS os_generate_formatted_filename tokens.
+ *  Produces e.g. "Game Capture 2026-11-03 05-03-12 PM". */
+std::string source_record_filename_pattern(const std::string &source_name)
+{
+	return windows_safe_source_label(source_name) + " %CCYY-%MM-%DD %I-%M-%S %p";
+}
+
+bool update_source_record_filename(obs_source_t *filter, const std::string &pattern)
+{
+	if (!filter)
+		return false;
+	obs_data_t *settings = obs_source_get_settings(filter);
+	if (!settings)
+		return false;
+	const char *cur = obs_data_get_string(settings, "filename_formatting");
+	if (cur && pattern == cur) {
+		obs_data_release(settings);
+		return true;
+	}
+	obs_data_set_string(settings, "filename_formatting", pattern.c_str());
+	obs_source_update(filter, settings);
+	obs_data_release(settings);
+	return true;
+}
+
+} // namespace
+
+size_t MsrController::apply_source_record_filename_formats()
+{
+	std::string filter_name;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		filter_name = settings_.source_record_filter;
+	}
+	if (filter_name.empty())
+		return 0;
+	const auto targets = source_record_targets();
+	size_t ok_n = 0;
+	for (const auto &name : targets) {
+		obs_source_t *src = obs_get_source_by_name(name.c_str());
+		if (!src)
+			continue;
+		obs_source_t *f = obs_source_get_filter_by_name(src, filter_name.c_str());
+		obs_source_release(src);
+		if (!f)
+			continue;
+		const std::string pattern = source_record_filename_pattern(name);
+		if (update_source_record_filename(f, pattern)) {
+			obs_log(LOG_INFO, "source record: filename_formatting on '%s' -> '%s'", name.c_str(),
+				pattern.c_str());
+			ok_n++;
+		}
+		obs_source_release(f);
+	}
+	return ok_n;
+}
+
 bool MsrController::set_source_recording(bool enabled)
 {
 	std::string filter_name;
@@ -1039,6 +1118,8 @@ bool MsrController::set_source_recording(bool enabled)
 		notify_source_record_state();
 		return false;
 	}
+	if (enabled)
+		apply_source_record_filename_formats();
 	size_t ok_n = 0;
 	for (const auto &name : targets) {
 		obs_source_t *src = obs_get_source_by_name(name.c_str());
