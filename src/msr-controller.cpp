@@ -128,8 +128,9 @@ void MsrController::load_settings()
 	const char *pattern = obs_data_get_string(data, "filename_pattern");
 	if (pattern && *pattern)
 		settings_.filename_pattern = pattern;
-	/* Migrate legacy default (24h underscore pattern) to date + 12h AM/PM. */
-	if (settings_.filename_pattern == "{source}_{orientation}_{date}_{time}")
+	/* Migrate known legacy MSR filename patterns to date + 12h AM/PM. */
+	if (settings_.filename_pattern == "{source}_{orientation}_{date}_{time}" ||
+	    settings_.filename_pattern == "{source}_{orientation}_{time}")
 		settings_.filename_pattern = "{source} {date} {time}";
 	const char *container = obs_data_get_string(data, "container");
 	if (container && *container)
