@@ -241,7 +241,7 @@ void MsrDock::build_ui()
 
 	/* MSR file-recording sources — default closed (SR picker is primary) */
 	auto *sources_body =
-		add_section(QString::fromUtf8(obs_module_text("VerticalSources")), "SectionSources", false);
+		add_section(QString::fromUtf8(obs_module_text("VerticalSources")), "SectionSources", true);
 	auto *sources_l = qobject_cast<QVBoxLayout *>(sources_body->layout());
 	source_scroll_ = new QScrollArea(sources_body);
 	source_scroll_->setWidgetResizable(true);
