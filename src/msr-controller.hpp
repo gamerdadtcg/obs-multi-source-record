@@ -55,6 +55,8 @@ public:
 	bool toggle_source_recording();
 	/** Stamp Source Record filters with date + 12h AM/PM filename pattern. */
 	size_t apply_source_record_filename_formats();
+	/** Push Different Audio / audio_source onto each target Source Record filter. */
+	size_t apply_source_record_audio_settings();
 	std::vector<std::string> source_record_targets() const;
 	/** Apply replay_enabled from current settings (start or stop buffers). */
 	void sync_replays_to_settings();

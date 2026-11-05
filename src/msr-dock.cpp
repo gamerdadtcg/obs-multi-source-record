@@ -763,9 +763,17 @@ void MsrDock::apply_to_controller()
 		s.source_record_filter = fn.isEmpty() ? "Source Record" : fn.toStdString();
 	}
 	s.source_record_sources.clear();
+	s.source_record_audio.clear();
 	for (const auto &row : sr_pick_rows_) {
 		if (row.check && row.check->isChecked())
 			s.source_record_sources.push_back(row.source_name.toStdString());
+		if (row.audio) {
+			MsrSettings::SourceRecordAudio ar;
+			ar.source_name = row.source_name.toStdString();
+			ar.audio_source = row.audio->currentData().toString().toStdString();
+			/* Persist even for unchecked rows so choice survives re-check. */
+			s.source_record_audio.push_back(ar);
+		}
 	}
 	if (source_record_sources_edit_) {
 		QStringList names;
@@ -1218,6 +1226,7 @@ void MsrDock::rebuild_sr_picker()
 	}
 
 	const QStringList names = enumerate_sources();
+	const QStringList audio_names = enumerate_audio_sources();
 	for (const QString &name : names) {
 		auto *row = new QWidget(this);
 		row->setObjectName(QStringLiteral("msrSourceRow"));
@@ -1233,9 +1242,33 @@ void MsrDock::rebuild_sr_picker()
 		pr.check->setChecked(selected.contains(name));
 		pr.check->blockSignals(false);
 		connect(pr.check, &QCheckBox::toggled, this, &MsrDock::on_sr_pick_changed);
+
+		pr.audio = new QComboBox(row);
+		pr.audio->setObjectName(QStringLiteral("msrSrAudio"));
+		pr.audio->setMinimumWidth(110);
+		pr.audio->setMaximumWidth(160);
+		pr.audio->setToolTip(QString::fromUtf8(obs_module_text("SourceRecordAudioTooltip")));
+		pr.audio->addItem(QString::fromUtf8(obs_module_text("SourceRecordAudioSource")), QString());
+		for (const QString &a : audio_names) {
+			if (a.isEmpty() || a == name)
+				continue;
+			pr.audio->addItem(a, a);
+		}
+		const QString saved_audio =
+			QString::fromStdString(source_record_audio_for(settings, name.toStdString()));
+		int ai = pr.audio->findData(saved_audio);
+		if (ai < 0)
+			ai = 0;
+		pr.audio->blockSignals(true);
+		pr.audio->setCurrentIndex(ai);
+		pr.audio->blockSignals(false);
+		connect(pr.audio, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+			&MsrDock::on_sr_audio_changed);
+
 		pr.icon = new QLabel(msr_source_type_icon(name, obs_source_id_for(name)), row);
 		pr.icon->setObjectName(QStringLiteral("msrTypeIcon"));
 		hl->addWidget(pr.check, 1);
+		hl->addWidget(pr.audio, 0);
 		hl->addWidget(pr.icon, 0, Qt::AlignRight | Qt::AlignVCenter);
 		sr_pick_layout_->addWidget(row);
 		sr_pick_rows_.push_back(pr);
@@ -1251,6 +1284,15 @@ void MsrDock::on_sr_pick_changed()
 {
 	apply_to_controller();
 	refresh_output_files();
+}
+
+void MsrDock::on_sr_audio_changed()
+{
+	apply_to_controller();
+	if (auto *c = MsrController::instance()) {
+		if (c->source_recording())
+			c->apply_source_record_audio_settings();
+	}
 }
 
 void MsrDock::on_open_output_file()
