@@ -25,15 +25,6 @@ class QTimer;
 class QToolButton;
 class QScrollArea;
 
-struct MsrSourceRow {
-	QCheckBox *enabled = nullptr;
-	QCheckBox *replay = nullptr;
-	QLabel *name = nullptr;
-	QComboBox *orientation = nullptr;
-	QComboBox *extra_audio = nullptr;
-	QString source_name;
-};
-
 struct MsrDestRow {
 	QCheckBox *enabled = nullptr;
 	QLineEdit *name = nullptr;
@@ -46,6 +37,8 @@ struct MsrDestRow {
 
 struct MsrSrPickRow {
 	QCheckBox *check = nullptr;
+	QCheckBox *replay = nullptr;
+	QComboBox *orientation = nullptr;
 	QComboBox *audio = nullptr;
 	QLabel *icon = nullptr;
 	QString source_name;
@@ -90,7 +83,6 @@ private:
 	QWidget *floating_host() const;
 	void load_from_controller();
 	void apply_to_controller();
-	void rebuild_source_list();
 	void rebuild_dest_list();
 	void rebuild_sr_picker();
 	void refresh_output_files();
@@ -100,8 +92,6 @@ private:
 	QString obs_source_id_for(const QString &name) const;
 
 	QScrollArea *outer_scroll_ = nullptr;
-	QScrollArea *source_scroll_ = nullptr;
-	QVBoxLayout *source_list_layout_ = nullptr;
 	struct SectionRef {
 		QToolButton *toggle = nullptr;
 		QWidget *body = nullptr;
@@ -109,7 +99,6 @@ private:
 		bool default_open = false;
 	};
 	std::vector<SectionRef> sections_;
-	std::vector<MsrSourceRow> rows_;
 	QVBoxLayout *dest_list_layout_ = nullptr;
 	std::vector<MsrDestRow> dest_rows_;
 	QLineEdit *folder_edit_ = nullptr;

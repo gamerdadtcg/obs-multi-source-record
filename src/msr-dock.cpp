@@ -183,6 +183,12 @@ void MsrDock::build_ui()
 	auto *sr_cap = new QLabel(QString::fromUtf8(obs_module_text("SourceRecordPickCaption")), sr_card);
 	sr_cap->setObjectName(QStringLiteral("msrCardCaption"));
 	sr_card_l->addWidget(sr_cap);
+	auto *sr_header = new QHBoxLayout();
+	sr_header->addStretch(1);
+	auto *refresh = new QPushButton(QString::fromUtf8(obs_module_text("RefreshSources")), sr_card);
+	connect(refresh, &QPushButton::clicked, this, &MsrDock::refresh_sources);
+	sr_header->addWidget(refresh);
+	sr_card_l->addLayout(sr_header);
 	sr_pick_layout_ = new QVBoxLayout();
 	sr_pick_layout_->setContentsMargins(0, 0, 0, 0);
 	sr_pick_layout_->setSpacing(4);
@@ -239,26 +245,6 @@ void MsrDock::build_ui()
 		return sw.body;
 	};
 
-	/* MSR file-recording sources — default closed (SR picker is primary) */
-	auto *sources_body =
-		add_section(QString::fromUtf8(obs_module_text("VerticalSources")), "SectionSources", true);
-	auto *sources_l = qobject_cast<QVBoxLayout *>(sources_body->layout());
-	source_scroll_ = new QScrollArea(sources_body);
-	source_scroll_->setWidgetResizable(true);
-	source_scroll_->setFrameShape(QFrame::StyledPanel);
-	source_scroll_->setMinimumHeight(8 * 28);
-	source_scroll_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::MinimumExpanding);
-	auto *source_host = new QWidget(source_scroll_);
-	source_list_layout_ = new QVBoxLayout(source_host);
-	source_list_layout_->setContentsMargins(4, 4, 4, 4);
-	source_list_layout_->setSpacing(4);
-	source_list_layout_->addStretch(1);
-	source_scroll_->setWidget(source_host);
-	sources_l->addWidget(source_scroll_);
-	auto *refresh = new QPushButton(QString::fromUtf8(obs_module_text("RefreshSources")), sources_body);
-	connect(refresh, &QPushButton::clicked, this, &MsrDock::refresh_sources);
-	sources_l->addWidget(refresh);
-
 	/* Output — default open */
 	auto *output_body = add_section(QString::fromUtf8(obs_module_text("Output")), "SectionOutput", true);
 	auto *output_l = qobject_cast<QVBoxLayout *>(output_body->layout());
@@ -267,6 +253,7 @@ void MsrDock::build_ui()
 	folder_edit_->setPlaceholderText(QString::fromUtf8(obs_module_text("OutputFolder")));
 	auto *browse = new QPushButton(QString::fromUtf8(obs_module_text("Browse")), output_body);
 	connect(browse, &QPushButton::clicked, this, &MsrDock::on_browse_folder);
+	connect(folder_edit_, &QLineEdit::editingFinished, this, &MsrDock::refresh_output_files);
 	folder_row->addWidget(folder_edit_, 1);
 	folder_row->addWidget(browse);
 	output_l->addLayout(folder_row);
@@ -279,6 +266,8 @@ void MsrDock::build_ui()
 	container_combo_->addItem(QStringLiteral("mkv"), QStringLiteral("mkv"));
 	container_combo_->addItem(QStringLiteral("mp4"), QStringLiteral("mp4"));
 	fmt_row->addWidget(new QLabel(QString::fromUtf8(obs_module_text("Container")), output_body));
+	connect(container_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+		&MsrDock::refresh_output_files);
 	fmt_row->addWidget(container_combo_, 1);
 	output_l->addLayout(fmt_row);
 
@@ -482,75 +471,6 @@ QStringList MsrDock::enumerate_audio_sources() const
 	return out;
 }
 
-void MsrDock::rebuild_source_list()
-{
-	while (QLayoutItem *item = source_list_layout_->takeAt(0)) {
-		if (QWidget *w = item->widget())
-			w->deleteLater();
-		delete item;
-	}
-	rows_.clear();
-
-	MsrSettings settings;
-	if (auto *c = MsrController::instance())
-		settings = c->settings();
-
-	QStringList names = enumerate_sources();
-	QStringList audio_names = enumerate_audio_sources();
-
-	for (const QString &name : names) {
-		auto *row = new QWidget(this);
-		auto *hl = new QHBoxLayout(row);
-		hl->setContentsMargins(0, 0, 0, 0);
-
-		MsrSourceRow sr;
-		sr.source_name = name;
-		sr.enabled = new QCheckBox(row);
-		sr.enabled->setToolTip(QString::fromUtf8(obs_module_text("RecordSourceTooltip")));
-		sr.replay = new QCheckBox(QString::fromUtf8(obs_module_text("SourceReplay")), row);
-		sr.replay->setToolTip(QString::fromUtf8(obs_module_text("SourceReplayTooltip")));
-		sr.name = new QLabel(name, row);
-		sr.orientation = new QComboBox(row);
-		sr.orientation->addItem(QString::fromUtf8(obs_module_text("OrientationHorizontal")),
-					(int)MsrOrientation::Horizontal);
-		sr.orientation->addItem(QString::fromUtf8(obs_module_text("OrientationVertical")),
-					(int)MsrOrientation::Vertical);
-		sr.orientation->addItem(QString::fromUtf8(obs_module_text("OrientationBoth")),
-					(int)MsrOrientation::Both);
-		sr.extra_audio = new QComboBox(row);
-		sr.extra_audio->addItem(QString::fromUtf8(obs_module_text("ExtraAudioNone")), QString());
-		for (const QString &a : audio_names) {
-			if (a.isEmpty() || a == name)
-				continue; /* never offer the row's own source as extra */
-			sr.extra_audio->addItem(a, a);
-		}
-
-		for (const auto &cfg : settings.sources) {
-			if (QString::fromStdString(cfg.source_name) == name) {
-				sr.enabled->setChecked(cfg.enabled);
-				if (sr.replay)
-					sr.replay->setChecked(cfg.replay_enabled);
-				int oi = sr.orientation->findData((int)cfg.orientation);
-				if (oi >= 0)
-					sr.orientation->setCurrentIndex(oi);
-				int ai = sr.extra_audio->findData(QString::fromStdString(cfg.extra_audio_source));
-				if (ai >= 0)
-					sr.extra_audio->setCurrentIndex(ai);
-				break;
-			}
-		}
-
-		hl->addWidget(sr.enabled);
-		hl->addWidget(sr.name, 1);
-		hl->addWidget(sr.replay);
-		hl->addWidget(sr.orientation);
-		hl->addWidget(sr.extra_audio);
-		source_list_layout_->addWidget(row);
-		rows_.push_back(sr);
-	}
-	source_list_layout_->addStretch(1);
-}
-
 void MsrDock::rebuild_dest_list()
 {
 	if (!dest_list_layout_)
@@ -689,7 +609,6 @@ void MsrDock::load_from_controller()
 		source_record_sources_edit_->setText(names.join(QStringLiteral(", ")));
 	}
 	on_split_mode_changed(split_mode_combo_ ? split_mode_combo_->currentIndex() : 0);
-	rebuild_source_list();
 	rebuild_sr_picker();
 	rebuild_dest_list();
 	refresh_output_files();
@@ -722,14 +641,15 @@ void MsrDock::apply_to_controller()
 		s.split_time_min = split_time_min_->value();
 	if (split_size_mb_)
 		s.split_size_mb = split_size_mb_->value();
+	/* The purple checklist is the single source configuration UI. */
 	s.sources.clear();
-	for (const auto &row : rows_) {
+	for (const auto &row : sr_pick_rows_) {
 		MsrSourceConfig cfg;
 		cfg.source_name = row.source_name.toStdString();
-		cfg.enabled = row.enabled->isChecked();
+		cfg.enabled = row.check && row.check->isChecked();
 		cfg.replay_enabled = row.replay && row.replay->isChecked();
 		cfg.orientation = static_cast<MsrOrientation>(row.orientation->currentData().toInt());
-		cfg.extra_audio_source = row.extra_audio->currentData().toString().toStdString();
+		cfg.extra_audio_source = row.audio ? row.audio->currentData().toString().toStdString() : std::string();
 		if (cfg.extra_audio_source == cfg.source_name)
 			cfg.extra_audio_source.clear();
 		s.sources.push_back(cfg);
@@ -1243,6 +1163,30 @@ void MsrDock::rebuild_sr_picker()
 		pr.check->blockSignals(false);
 		connect(pr.check, &QCheckBox::toggled, this, &MsrDock::on_sr_pick_changed);
 
+		pr.replay = new QCheckBox(QString::fromUtf8(obs_module_text("SourceReplay")), row);
+		pr.replay->setToolTip(QString::fromUtf8(obs_module_text("SourceReplayTooltip")));
+		pr.orientation = new QComboBox(row);
+		pr.orientation->setObjectName(QStringLiteral("msrSrOrientation"));
+		pr.orientation->addItem(QString::fromUtf8(obs_module_text("OrientationHorizontal")),
+					(int)MsrOrientation::Horizontal);
+		pr.orientation->addItem(QString::fromUtf8(obs_module_text("OrientationVertical")),
+					(int)MsrOrientation::Vertical);
+		pr.orientation->addItem(QString::fromUtf8(obs_module_text("OrientationBoth")),
+					(int)MsrOrientation::Both);
+
+		for (const auto &cfg : settings.sources) {
+			if (QString::fromStdString(cfg.source_name) != name)
+				continue;
+			pr.replay->setChecked(cfg.replay_enabled);
+			const int oi = pr.orientation->findData((int)cfg.orientation);
+			if (oi >= 0)
+				pr.orientation->setCurrentIndex(oi);
+			break;
+		}
+		connect(pr.replay, &QCheckBox::toggled, this, &MsrDock::on_sr_pick_changed);
+		connect(pr.orientation, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+			&MsrDock::on_sr_pick_changed);
+
 		pr.audio = new QComboBox(row);
 		pr.audio->setObjectName(QStringLiteral("msrSrAudio"));
 		pr.audio->setMinimumWidth(110);
@@ -1270,6 +1214,20 @@ void MsrDock::rebuild_sr_picker()
 		hl->addWidget(pr.check, 1);
 		hl->addWidget(pr.audio, 0);
 		hl->addWidget(pr.icon, 0, Qt::AlignRight | Qt::AlignVCenter);
+		/* Keep the source name prominent; compact secondary controls fit narrow docks. */
+		auto *options = new QHBoxLayout();
+		options->setContentsMargins(32, 0, 0, 0);
+		options->setSpacing(8);
+		options->addWidget(pr.replay);
+		options->addStretch(1);
+		options->addWidget(pr.orientation);
+		auto *row_l = new QVBoxLayout();
+		row_l->setContentsMargins(0, 0, 0, 0);
+		row_l->setSpacing(2);
+		row_l->addLayout(hl);
+		row_l->addLayout(options);
+		delete row->layout();
+		row->setLayout(row_l);
 		sr_pick_layout_->addWidget(row);
 		sr_pick_rows_.push_back(pr);
 	}
@@ -1338,41 +1296,17 @@ void MsrDock::refresh_output_files()
 		}
 	}
 
-	auto resolve_dir = [&](const QString &source_name) -> QString {
-		obs_source_t *src = obs_get_source_by_name(source_name.toUtf8().constData());
-		if (!src)
-			return folder;
-		QString filter_name = QStringLiteral("Source Record");
-		if (source_record_filter_edit_ && !source_record_filter_edit_->text().trimmed().isEmpty())
-			filter_name = source_record_filter_edit_->text().trimmed();
-		obs_source_t *f = obs_source_get_filter_by_name(src, filter_name.toUtf8().constData());
-		obs_source_release(src);
-		if (!f)
-			return folder;
-		obs_data_t *st = obs_source_get_settings(f);
-		obs_source_release(f);
-		QString path;
-		if (st) {
-			const char *p = obs_data_get_string(st, "path");
-			if (p && *p)
-				path = QString::fromUtf8(p);
-			obs_data_release(st);
-		}
-		return path.isEmpty() ? folder : path;
-	};
-
 	bool any = false;
+	const QString container = container_combo_ ? container_combo_->currentData().toString() : QStringLiteral("mkv");
 	for (const QString &name : targets) {
-		const QString dir_path = resolve_dir(name);
+		const QString dir_path = folder;
 		if (dir_path.isEmpty())
 			continue;
 		QDir dir(dir_path);
 		if (!dir.exists())
 			continue;
-		const QFileInfoList files = dir.entryInfoList(
-			QStringList{QStringLiteral("*.mkv"), QStringLiteral("*.mp4"), QStringLiteral("*.mov"),
-				    QStringLiteral("*.flv"), QStringLiteral("*.ts")},
-			QDir::Files, QDir::Time);
+		const QFileInfoList files = dir.entryInfoList(QStringList{QStringLiteral("*.%1").arg(container)},
+								QDir::Files, QDir::Time);
 		QFileInfo best;
 		for (const QFileInfo &fi : files) {
 			if (fi.fileName().startsWith(name, Qt::CaseInsensitive)) {

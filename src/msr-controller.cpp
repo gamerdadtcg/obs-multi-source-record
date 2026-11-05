@@ -1072,25 +1072,37 @@ std::string windows_safe_source_label(const std::string &name)
 }
 
 /** Exeldro Source Record / OBS os_generate_formatted_filename tokens.
- *  Produces e.g. "Game Capture 2026-11-03 05-03-12 PM". */
-std::string source_record_filename_pattern(const std::string &source_name)
+ *  Keep Source Record on the same Output pattern as MSR's ISO recordings. */
+std::string source_record_filename_pattern(std::string pattern, const std::string &source_name)
 {
-	return windows_safe_source_label(source_name) + " %CCYY-%MM-%DD %I-%M-%S %p";
+	const std::string source = windows_safe_source_label(source_name);
+	const std::pair<const char *, const char *> tokens[] = {
+		{"{source}", source.c_str()},
+		{"{orientation}", ""},
+		{"{date}", "%CCYY-%MM-%DD"},
+		{"{time}", "%I-%M-%S %p"},
+	};
+	for (const auto &token : tokens) {
+		size_t pos = 0;
+		while ((pos = pattern.find(token.first, pos)) != std::string::npos) {
+			pattern.replace(pos, std::strlen(token.first), token.second);
+			pos += std::strlen(token.second);
+		}
+	}
+	return pattern;
 }
 
-bool update_source_record_filename(obs_source_t *filter, const std::string &pattern)
+bool update_source_record_output(obs_source_t *filter, const std::string &path, const std::string &pattern,
+				 const std::string &container)
 {
 	if (!filter)
 		return false;
 	obs_data_t *settings = obs_source_get_settings(filter);
 	if (!settings)
 		return false;
-	const char *cur = obs_data_get_string(settings, "filename_formatting");
-	if (cur && pattern == cur) {
-		obs_data_release(settings);
-		return true;
-	}
+	obs_data_set_string(settings, "path", path.c_str());
 	obs_data_set_string(settings, "filename_formatting", pattern.c_str());
+	obs_data_set_string(settings, "rec_format", container.c_str());
 	obs_source_update(filter, settings);
 	obs_data_release(settings);
 	return true;
@@ -1101,12 +1113,22 @@ bool update_source_record_filename(obs_source_t *filter, const std::string &patt
 size_t MsrController::apply_source_record_filename_formats()
 {
 	std::string filter_name;
+	std::string output_folder;
+	std::string filename_pattern;
+	std::string container;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		filter_name = settings_.source_record_filter;
+		output_folder = settings_.output_folder;
+		filename_pattern = settings_.filename_pattern;
+		container = settings_.container;
 	}
-	if (filter_name.empty())
+	if (filter_name.empty() || output_folder.empty())
 		return 0;
+	if (filename_pattern.empty())
+		filename_pattern = "{source} {date} {time}";
+	if (container != "mp4")
+		container = "mkv";
 	const auto targets = source_record_targets();
 	size_t ok_n = 0;
 	for (const auto &name : targets) {
@@ -1117,10 +1139,9 @@ size_t MsrController::apply_source_record_filename_formats()
 		obs_source_release(src);
 		if (!f)
 			continue;
-		const std::string pattern = source_record_filename_pattern(name);
-		if (update_source_record_filename(f, pattern)) {
-			obs_log(LOG_INFO, "source record: filename_formatting on '%s' -> '%s'", name.c_str(),
-				pattern.c_str());
+		const std::string pattern = source_record_filename_pattern(filename_pattern, name);
+		if (update_source_record_output(f, output_folder, pattern, container)) {
+			obs_log(LOG_INFO, "source record: output on '%s' uses dock Output settings", name.c_str());
 			ok_n++;
 		}
 		obs_source_release(f);
