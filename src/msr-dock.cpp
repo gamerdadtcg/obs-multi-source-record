@@ -1305,8 +1305,8 @@ void MsrDock::refresh_output_files()
 		QDir dir(dir_path);
 		if (!dir.exists())
 			continue;
-		const QFileInfoList files = dir.entryInfoList(QStringList{QStringLiteral("*.%1").arg(container)},
-								QDir::Files, QDir::Time);
+		const QFileInfoList files =
+			dir.entryInfoList(QStringList{QStringLiteral("*.%1").arg(container)}, QDir::Files, QDir::Time);
 		QFileInfo best;
 		for (const QFileInfo &fi : files) {
 			if (fi.fileName().startsWith(name, Qt::CaseInsensitive)) {
