@@ -84,24 +84,7 @@ struct MsrSettings {
 	/** Sources whose Source Record filter is toggled by Record All Sources.
 	 *  Empty = auto-discover every source that already has source_record_filter. */
 	std::vector<std::string> source_record_sources;
-	/** Per video-source audio choice for Exeldro Source Record.
-	 *  Empty audio_source = "Source audio" (different_audio OFF). */
-	struct SourceRecordAudio {
-		std::string source_name;
-		std::string audio_source;
-	};
-	std::vector<SourceRecordAudio> source_record_audio;
 };
-
-/** Lookup SR audio override for a video source (empty string = source audio). */
-inline std::string source_record_audio_for(const MsrSettings &s, const std::string &source_name)
-{
-	for (const auto &row : s.source_record_audio) {
-		if (row.source_name == source_name)
-			return row.audio_source;
-	}
-	return {};
-}
 
 inline const char *orientation_token(MsrOrientation o)
 {
