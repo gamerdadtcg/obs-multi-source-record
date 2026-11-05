@@ -1150,8 +1150,11 @@ void MsrDock::rebuild_sr_picker()
 	for (const QString &name : names) {
 		auto *row = new QWidget(this);
 		row->setObjectName(QStringLiteral("msrSourceRow"));
-		auto *hl = new QHBoxLayout(row);
-		hl->setContentsMargins(4, 4, 4, 4);
+		auto *row_l = new QVBoxLayout(row);
+		row_l->setContentsMargins(4, 4, 4, 4);
+		row_l->setSpacing(2);
+		auto *hl = new QHBoxLayout();
+		hl->setContentsMargins(0, 0, 0, 0);
 		hl->setSpacing(8);
 
 		MsrSrPickRow pr;
@@ -1221,13 +1224,8 @@ void MsrDock::rebuild_sr_picker()
 		options->addWidget(pr.replay);
 		options->addStretch(1);
 		options->addWidget(pr.orientation);
-		auto *row_l = new QVBoxLayout();
-		row_l->setContentsMargins(0, 0, 0, 0);
-		row_l->setSpacing(2);
 		row_l->addLayout(hl);
 		row_l->addLayout(options);
-		delete row->layout();
-		row->setLayout(row_l);
 		sr_pick_layout_->addWidget(row);
 		sr_pick_rows_.push_back(pr);
 	}
