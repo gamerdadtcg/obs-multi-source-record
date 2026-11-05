@@ -46,6 +46,7 @@ struct MsrDestRow {
 
 struct MsrSrPickRow {
 	QCheckBox *check = nullptr;
+	QComboBox *audio = nullptr;
 	QLabel *icon = nullptr;
 	QString source_name;
 };
@@ -74,6 +75,7 @@ public slots:
 	void on_split_mode_changed(int index);
 	void refresh_status_labels();
 	void on_sr_pick_changed();
+	void on_sr_audio_changed();
 	void on_open_output_file();
 
 protected:

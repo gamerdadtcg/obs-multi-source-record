@@ -191,6 +191,22 @@ void MsrController::load_settings()
 		obs_data_array_release(sr_arr);
 	}
 
+	settings_.source_record_audio.clear();
+	obs_data_array_t *sr_audio_arr = obs_data_get_array(data, "source_record_audio");
+	if (sr_audio_arr) {
+		const size_t n = obs_data_array_count(sr_audio_arr);
+		for (size_t i = 0; i < n; i++) {
+			obs_data_t *item = obs_data_array_item(sr_audio_arr, i);
+			MsrSettings::SourceRecordAudio row;
+			row.source_name = obs_data_get_string(item, "source_name");
+			row.audio_source = obs_data_get_string(item, "audio_source");
+			if (!row.source_name.empty())
+				settings_.source_record_audio.push_back(row);
+			obs_data_release(item);
+		}
+		obs_data_array_release(sr_audio_arr);
+	}
+
 	obs_data_array_t *arr = obs_data_get_array(data, "sources");
 	if (arr) {
 		const size_t n = obs_data_array_count(arr);
@@ -336,6 +352,17 @@ void MsrController::save_settings()
 	}
 	obs_data_set_array(data, "source_record_sources", sr_out);
 	obs_data_array_release(sr_out);
+
+	obs_data_array_t *sr_audio_out = obs_data_array_create();
+	for (const auto &row : settings_.source_record_audio) {
+		obs_data_t *item = obs_data_create();
+		obs_data_set_string(item, "source_name", row.source_name.c_str());
+		obs_data_set_string(item, "audio_source", row.audio_source.c_str());
+		obs_data_array_push_back(sr_audio_out, item);
+		obs_data_release(item);
+	}
+	obs_data_set_array(data, "source_record_audio", sr_audio_out);
+	obs_data_array_release(sr_audio_out);
 
 	const char *json = obs_data_get_json(data);
 	std::ofstream out(settings_path(), std::ios::trunc);
@@ -1101,6 +1128,67 @@ size_t MsrController::apply_source_record_filename_formats()
 	return ok_n;
 }
 
+size_t MsrController::apply_source_record_audio_settings()
+{
+	std::string filter_name;
+	std::vector<std::string> targets;
+	std::vector<MsrSettings::SourceRecordAudio> audio_rows;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		filter_name = settings_.source_record_filter;
+		audio_rows = settings_.source_record_audio;
+		if (!settings_.source_record_sources.empty()) {
+			targets = settings_.source_record_sources;
+		}
+	}
+	if (filter_name.empty())
+		return 0;
+	if (targets.empty()) {
+		/* Auto-discover: same rule as source_record_targets() without nested lock. */
+		targets = source_record_targets();
+	}
+
+	auto audio_for = [&](const std::string &src) -> std::string {
+		for (const auto &row : audio_rows) {
+			if (row.source_name == src)
+				return row.audio_source;
+		}
+		return {};
+	};
+
+	size_t ok_n = 0;
+	for (const auto &name : targets) {
+		obs_source_t *src = obs_get_source_by_name(name.c_str());
+		if (!src)
+			continue;
+		obs_source_t *f = obs_source_get_filter_by_name(src, filter_name.c_str());
+		obs_source_release(src);
+		if (!f)
+			continue;
+		obs_data_t *settings = obs_source_get_settings(f);
+		if (!settings) {
+			obs_source_release(f);
+			continue;
+		}
+		const std::string audio = audio_for(name);
+		if (audio.empty()) {
+			obs_data_set_bool(settings, "different_audio", false);
+			obs_data_set_string(settings, "audio_source", "");
+		} else {
+			obs_data_set_bool(settings, "different_audio", true);
+			obs_data_set_string(settings, "audio_source", audio.c_str());
+			obs_data_set_int(settings, "audio_track", 0);
+		}
+		obs_source_update(f, settings);
+		obs_data_release(settings);
+		obs_source_release(f);
+		obs_log(LOG_INFO, "source record: audio on '%s' -> %s", name.c_str(),
+			audio.empty() ? "source audio" : audio.c_str());
+		ok_n++;
+	}
+	return ok_n;
+}
+
 bool MsrController::set_source_recording(bool enabled)
 {
 	std::string filter_name;
@@ -1119,8 +1207,10 @@ bool MsrController::set_source_recording(bool enabled)
 		notify_source_record_state();
 		return false;
 	}
-	if (enabled)
+	if (enabled) {
 		apply_source_record_filename_formats();
+		apply_source_record_audio_settings();
+	}
 	size_t ok_n = 0;
 	for (const auto &name : targets) {
 		obs_source_t *src = obs_get_source_by_name(name.c_str());
