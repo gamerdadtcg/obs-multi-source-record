@@ -229,7 +229,6 @@ void MsrDock::build_ui()
 	output_files_layout_->setContentsMargins(0, 0, 0, 0);
 	output_files_layout_->setSpacing(6);
 	files_l->addLayout(output_files_layout_);
-	root->addWidget(files_card);
 
 	auto add_section = [this, content, root](const QString &title, const char *key,
 						 bool default_open) -> QWidget * {
@@ -270,6 +269,8 @@ void MsrDock::build_ui()
 		&MsrDock::refresh_output_files);
 	fmt_row->addWidget(container_combo_, 1);
 	output_l->addLayout(fmt_row);
+	/* Last-recorded ISOs stay with the shared Output settings at the bottom. */
+	root->addWidget(files_card);
 
 	/* Recording options — default closed */
 	auto *opts_body =
@@ -1320,6 +1321,8 @@ void MsrDock::refresh_output_files()
 		card->setObjectName(QStringLiteral("msrFileCard"));
 		card->setCursor(Qt::PointingHandCursor);
 		card->setProperty("msrPath", best.absoluteFilePath());
+		card->setMinimumHeight(76);
+		card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
 		card->setStyleSheet(
 			QStringLiteral("QPushButton#msrFileCard { text-align: left; padding: 8px 10px; "
 				       "background: #16161c; border: 1px solid #2f2f38; border-radius: 10px; }"
@@ -1327,7 +1330,22 @@ void MsrDock::refresh_output_files()
 		const QString icon = msr_source_type_icon(name, obs_source_id_for(name));
 		const QString meta =
 			QString::fromUtf8(obs_module_text("OutputFileMetaFallback")).arg(best.absolutePath());
-		card->setText(QStringLiteral("%1  %2\n%3").arg(icon, best.fileName(), meta));
+		card->setToolTip(meta);
+		auto *card_l = new QVBoxLayout(card);
+		card_l->setContentsMargins(10, 8, 10, 8);
+		card_l->setSpacing(4);
+		auto *filename = new QLabel(QStringLiteral("%1  %2").arg(icon, best.fileName()), card);
+		filename->setObjectName(QStringLiteral("msrFileName"));
+		filename->setWordWrap(true);
+		filename->setTextInteractionFlags(Qt::TextSelectableByMouse);
+		filename->setToolTip(best.fileName());
+		card_l->addWidget(filename);
+		auto *path = new QLabel(meta, card);
+		path->setObjectName(QStringLiteral("msrFileMeta"));
+		path->setWordWrap(true);
+		path->setTextInteractionFlags(Qt::TextSelectableByMouse);
+		path->setToolTip(meta);
+		card_l->addWidget(path);
 		connect(card, &QPushButton::clicked, this, &MsrDock::on_open_output_file);
 		output_files_layout_->addWidget(card);
 	}
