@@ -44,6 +44,12 @@ struct MsrDestRow {
 	QCheckBox *track_checks[6] = {};
 };
 
+struct MsrSrPickRow {
+	QCheckBox *check = nullptr;
+	QLabel *icon = nullptr;
+	QString source_name;
+};
+
 class MsrDock : public QWidget {
 	Q_OBJECT
 public:
@@ -67,6 +73,8 @@ public slots:
 	void update_source_record_state(bool active);
 	void on_split_mode_changed(int index);
 	void refresh_status_labels();
+	void on_sr_pick_changed();
+	void on_open_output_file();
 
 protected:
 	void showEvent(QShowEvent *event) override;
@@ -82,8 +90,12 @@ private:
 	void apply_to_controller();
 	void rebuild_source_list();
 	void rebuild_dest_list();
+	void rebuild_sr_picker();
+	void refresh_output_files();
+	void apply_theme();
 	QStringList enumerate_sources() const;
 	QStringList enumerate_audio_sources() const;
+	QString obs_source_id_for(const QString &name) const;
 
 	QScrollArea *outer_scroll_ = nullptr;
 	QScrollArea *source_scroll_ = nullptr;
@@ -122,6 +134,13 @@ private:
 	QPushButton *source_record_btn_ = nullptr;
 	QLineEdit *source_record_filter_edit_ = nullptr;
 	QLineEdit *source_record_sources_edit_ = nullptr;
+	QVBoxLayout *sr_pick_layout_ = nullptr;
+	std::vector<MsrSrPickRow> sr_pick_rows_;
+	QWidget *rec_hero_ = nullptr;
+	QLabel *rec_dot_label_ = nullptr;
+	QLabel *rec_text_label_ = nullptr;
+	QLabel *rec_timer_label_ = nullptr;
+	QVBoxLayout *output_files_layout_ = nullptr;
 	QLabel *status_label_ = nullptr;
 	QLabel *source_record_status_label_ = nullptr;
 	QLabel *stream_status_label_ = nullptr;

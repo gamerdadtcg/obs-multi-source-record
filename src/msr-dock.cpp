@@ -10,6 +10,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include "msr-dock.hpp"
 #include "msr-controller.hpp"
+#include "msr-theme.hpp"
 #include "plugin-support.h"
 
 #include <obs.h>
@@ -38,6 +39,12 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QObject>
 #include <QTimer>
 #include <QDateTime>
+#include <QDesktopServices>
+#include <QUrl>
+#include <QDir>
+#include <QFileInfo>
+#include <QStyle>
+#include <QSet>
 
 #include <string>
 
@@ -83,9 +90,7 @@ SectionWidgets make_collapsible(QWidget *parent, const QString &title, bool defa
 	sw.toggle->setCheckable(true);
 	sw.toggle->setChecked(default_open);
 	sw.toggle->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-	sw.toggle->setStyleSheet(
-		QStringLiteral("QToolButton { border: none; font-weight: 600; text-align: left; padding: 4px 2px; }"
-			       "QToolButton:hover { background: rgba(127,127,127,40); }"));
+	sw.toggle->setStyleSheet(QString());
 	auto set_header = [toggle = sw.toggle, title](bool on) {
 		toggle->setText(QStringLiteral("%1  %2").arg(on ? QStringLiteral("▾") : QStringLiteral("▸"), title));
 	};
@@ -141,8 +146,10 @@ MsrDock::~MsrDock()
 
 void MsrDock::build_ui()
 {
-	setMinimumSize(380, 480);
+	setObjectName(QStringLiteral("MsrDock"));
+	setMinimumSize(320, 480);
 	setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+	apply_theme();
 
 	auto *outer = new QVBoxLayout(this);
 	outer->setContentsMargins(0, 0, 0, 0);
@@ -157,32 +164,84 @@ void MsrDock::build_ui()
 	outer_scroll_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
 	auto *content = new QWidget(outer_scroll_);
-	content->setMinimumWidth(340);
+	content->setObjectName(QStringLiteral("msrRoot"));
+	content->setMinimumWidth(280);
 	auto *root = new QVBoxLayout(content);
-	root->setContentsMargins(8, 8, 8, 8);
-	root->setSpacing(6);
+	root->setContentsMargins(10, 10, 10, 10);
+	root->setSpacing(10);
 
-	auto *title = new QLabel(QString::fromUtf8(obs_module_text("DockTitle")), content);
-	QFont f = title->font();
-	f.setBold(true);
-	f.setPointSize(f.pointSize() + 1);
-	title->setFont(f);
-	root->addWidget(title);
+	auto *header = new QLabel(QString::fromUtf8(obs_module_text("DockHeaderTitle")), content);
+	header->setObjectName(QStringLiteral("msrHeaderTitle"));
+	root->addWidget(header);
 
-	auto *hint = new QLabel(QString::fromUtf8(obs_module_text("DockHint")), content);
-	hint->setWordWrap(true);
-	root->addWidget(hint);
+	/* Source Record picker card */
+	auto *sr_card = new QWidget(content);
+	sr_card->setObjectName(QStringLiteral("msrCard"));
+	auto *sr_card_l = new QVBoxLayout(sr_card);
+	sr_card_l->setContentsMargins(10, 10, 10, 10);
+	sr_card_l->setSpacing(6);
+	auto *sr_cap = new QLabel(QString::fromUtf8(obs_module_text("SourceRecordPickCaption")), sr_card);
+	sr_cap->setObjectName(QStringLiteral("msrCardCaption"));
+	sr_card_l->addWidget(sr_cap);
+	sr_pick_layout_ = new QVBoxLayout();
+	sr_pick_layout_->setContentsMargins(0, 0, 0, 0);
+	sr_pick_layout_->setSpacing(4);
+	sr_card_l->addLayout(sr_pick_layout_);
+	root->addWidget(sr_card);
+
+	/* REC + timer hero */
+	rec_hero_ = new QWidget(content);
+	rec_hero_->setObjectName(QStringLiteral("msrCard"));
+	auto *hero_l = new QHBoxLayout(rec_hero_);
+	hero_l->setContentsMargins(14, 12, 14, 12);
+	hero_l->setSpacing(12);
+	rec_dot_label_ = new QLabel(QStringLiteral("●"), rec_hero_);
+	rec_dot_label_->setObjectName(QStringLiteral("msrRecDot"));
+	rec_text_label_ = new QLabel(QStringLiteral("REC"), rec_hero_);
+	rec_text_label_->setObjectName(QStringLiteral("msrRecText"));
+	auto *sep = new QFrame(rec_hero_);
+	sep->setObjectName(QStringLiteral("msrVSep"));
+	sep->setFrameShape(QFrame::VLine);
+	rec_timer_label_ = new QLabel(QStringLiteral("00:00:00"), rec_hero_);
+	rec_timer_label_->setObjectName(QStringLiteral("msrTimer"));
+	hero_l->addWidget(rec_dot_label_);
+	hero_l->addWidget(rec_text_label_);
+	hero_l->addWidget(sep);
+	hero_l->addWidget(rec_timer_label_, 1);
+	root->addWidget(rec_hero_);
+
+	/* Output files card */
+	auto *files_card = new QWidget(content);
+	files_card->setObjectName(QStringLiteral("msrCard"));
+	auto *files_l = new QVBoxLayout(files_card);
+	files_l->setContentsMargins(10, 10, 10, 10);
+	files_l->setSpacing(6);
+	auto *files_cap = new QLabel(QString::fromUtf8(obs_module_text("OutputFilesCaption")), files_card);
+	files_cap->setObjectName(QStringLiteral("msrCardCaption"));
+	files_l->addWidget(files_cap);
+	output_files_layout_ = new QVBoxLayout();
+	output_files_layout_->setContentsMargins(0, 0, 0, 0);
+	output_files_layout_->setSpacing(6);
+	files_l->addLayout(output_files_layout_);
+	root->addWidget(files_card);
 
 	auto add_section = [this, content, root](const QString &title, const char *key,
 						 bool default_open) -> QWidget * {
 		SectionWidgets sw = make_collapsible(content, title, default_open);
 		sections_.push_back(SectionRef{sw.toggle, sw.body, key, default_open});
-		root->addWidget(sw.section);
+		auto *wrap = new QWidget(content);
+		wrap->setObjectName(QStringLiteral("msrCard"));
+		auto *wl = new QVBoxLayout(wrap);
+		wl->setContentsMargins(8, 6, 8, 8);
+		wl->setSpacing(4);
+		wl->addWidget(sw.section);
+		root->addWidget(wrap);
 		return sw.body;
 	};
 
-	/* Sources — default open */
-	auto *sources_body = add_section(QString::fromUtf8(obs_module_text("VerticalSources")), "SectionSources", true);
+	/* MSR file-recording sources — default closed (SR picker is primary) */
+	auto *sources_body =
+		add_section(QString::fromUtf8(obs_module_text("VerticalSources")), "SectionSources", false);
 	auto *sources_l = qobject_cast<QVBoxLayout *>(sources_body->layout());
 	source_scroll_ = new QScrollArea(sources_body);
 	source_scroll_->setWidgetResizable(true);
@@ -277,6 +336,7 @@ void MsrDock::build_ui()
 	source_record_sources_edit_ = new QLineEdit(opts_body);
 	source_record_sources_edit_->setPlaceholderText(
 		QString::fromUtf8(obs_module_text("SourceRecordSourcesPlaceholder")));
+	source_record_sources_edit_->setVisible(false);
 	opts_l->addWidget(source_record_sources_edit_);
 
 	/* Clipping (replay buffer) — default closed */
@@ -359,6 +419,13 @@ void MsrDock::build_ui()
 	footer_l->setContentsMargins(8, 6, 8, 6);
 	footer_l->setSpacing(4);
 
+	auto *sr_row = new QHBoxLayout();
+	source_record_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("StartSourceRecord")), footer);
+	source_record_btn_->setObjectName(QStringLiteral("msrPrimaryBtn"));
+	connect(source_record_btn_, &QPushButton::clicked, this, &MsrDock::on_toggle_source_record);
+	sr_row->addWidget(source_record_btn_, 1);
+	footer_l->addLayout(sr_row);
+
 	auto *btn_row = new QHBoxLayout();
 	auto *save_btn = new QPushButton(QString::fromUtf8(obs_module_text("Save")), footer);
 	connect(save_btn, &QPushButton::clicked, this, &MsrDock::on_save);
@@ -378,12 +445,6 @@ void MsrDock::build_ui()
 	btn_row->addWidget(chapter_btn_);
 	btn_row->addWidget(replay_btn_);
 	footer_l->addLayout(btn_row);
-
-	auto *sr_row = new QHBoxLayout();
-	source_record_btn_ = new QPushButton(QString::fromUtf8(obs_module_text("StartSourceRecord")), footer);
-	connect(source_record_btn_, &QPushButton::clicked, this, &MsrDock::on_toggle_source_record);
-	sr_row->addWidget(source_record_btn_, 1);
-	footer_l->addLayout(sr_row);
 
 	status_label_ = new QLabel(QString::fromUtf8(obs_module_text("StatusIdle")), footer);
 	status_label_->setWordWrap(true);
@@ -629,7 +690,9 @@ void MsrDock::load_from_controller()
 	}
 	on_split_mode_changed(split_mode_combo_ ? split_mode_combo_->currentIndex() : 0);
 	rebuild_source_list();
+	rebuild_sr_picker();
 	rebuild_dest_list();
+	refresh_output_files();
 	refresh_status_labels();
 }
 
@@ -700,14 +763,15 @@ void MsrDock::apply_to_controller()
 		s.source_record_filter = fn.isEmpty() ? "Source Record" : fn.toStdString();
 	}
 	s.source_record_sources.clear();
+	for (const auto &row : sr_pick_rows_) {
+		if (row.check && row.check->isChecked())
+			s.source_record_sources.push_back(row.source_name.toStdString());
+	}
 	if (source_record_sources_edit_) {
-		const QStringList parts =
-			source_record_sources_edit_->text().split(QLatin1Char(','), Qt::SkipEmptyParts);
-		for (QString part : parts) {
-			part = part.trimmed();
-			if (!part.isEmpty())
-				s.source_record_sources.push_back(part.toStdString());
-		}
+		QStringList names;
+		for (const auto &n : s.source_record_sources)
+			names << QString::fromStdString(n);
+		source_record_sources_edit_->setText(names.join(QStringLiteral(", ")));
 	}
 	c->set_settings(s);
 }
@@ -874,6 +938,27 @@ void MsrDock::refresh_status_labels()
 	if (source_record_btn_) {
 		source_record_btn_->setText(
 			QString::fromUtf8(obs_module_text(source_rec ? "StopSourceRecord" : "StartSourceRecord")));
+		source_record_btn_->setObjectName(source_rec ? QStringLiteral("msrDangerBtn")
+							     : QStringLiteral("msrPrimaryBtn"));
+		source_record_btn_->style()->unpolish(source_record_btn_);
+		source_record_btn_->style()->polish(source_record_btn_);
+	}
+	if (rec_text_label_ && rec_dot_label_ && rec_timer_label_) {
+		if (source_rec && source_record_started_ms_ > 0) {
+			rec_dot_label_->setObjectName(QStringLiteral("msrRecDot"));
+			rec_text_label_->setObjectName(QStringLiteral("msrRecText"));
+			rec_text_label_->setText(QStringLiteral("REC"));
+			rec_timer_label_->setText(format_elapsed(now - source_record_started_ms_));
+		} else {
+			rec_dot_label_->setObjectName(QStringLiteral("msrRecIdle"));
+			rec_text_label_->setObjectName(QStringLiteral("msrRecIdle"));
+			rec_text_label_->setText(QString::fromUtf8(obs_module_text("StatusSourceRecordIdleShort")));
+			rec_timer_label_->setText(QStringLiteral("00:00:00"));
+		}
+		for (QLabel *lb : {rec_dot_label_, rec_text_label_, rec_timer_label_}) {
+			lb->style()->unpolish(lb);
+			lb->style()->polish(lb);
+		}
 	}
 	if (source_record_status_label_) {
 		if (source_rec && source_record_started_ms_ > 0) {
@@ -887,7 +972,7 @@ void MsrDock::refresh_status_labels()
 			const QString targets_line =
 				QString::fromUtf8(obs_module_text("StatusSourceRecordTargets"))
 					.arg(names.isEmpty() ? QStringLiteral("…") : names.join(QStringLiteral(", ")));
-			source_record_status_label_->setStyleSheet(QStringLiteral("color: #e74c3c; font-weight: 600;"));
+			source_record_status_label_->setStyleSheet(QStringLiteral("color: #ef4444; font-weight: 600;"));
 			source_record_status_label_->setText(timer_line + QStringLiteral("\n") + targets_line);
 		} else {
 			source_record_status_label_->setStyleSheet(QString());
@@ -993,6 +1078,8 @@ void MsrDock::update_source_record_state(bool active)
 			QString::fromUtf8(obs_module_text(active ? "StopSourceRecord" : "StartSourceRecord")));
 	}
 	refresh_status_labels();
+
+	refresh_output_files();
 }
 
 void MsrDock::on_save_replay()
@@ -1088,4 +1175,193 @@ void MsrDock::hideEvent(QHideEvent *event)
 {
 	save_window_geometry();
 	QWidget::hideEvent(event);
+}
+
+void MsrDock::apply_theme()
+{
+	setStyleSheet(msr_dock_stylesheet());
+}
+
+QString MsrDock::obs_source_id_for(const QString &name) const
+{
+	obs_source_t *src = obs_get_source_by_name(name.toUtf8().constData());
+	if (!src)
+		return {};
+	const char *id = obs_source_get_id(src);
+	QString out = id ? QString::fromUtf8(id) : QString();
+	obs_source_release(src);
+	return out;
+}
+
+void MsrDock::rebuild_sr_picker()
+{
+	if (!sr_pick_layout_)
+		return;
+	while (QLayoutItem *item = sr_pick_layout_->takeAt(0)) {
+		if (QWidget *w = item->widget())
+			w->deleteLater();
+		delete item;
+	}
+	sr_pick_rows_.clear();
+
+	MsrSettings settings;
+	if (auto *c = MsrController::instance())
+		settings = c->settings();
+
+	QSet<QString> selected;
+	for (const auto &n : settings.source_record_sources)
+		selected.insert(QString::fromStdString(n));
+	if (selected.isEmpty()) {
+		selected.insert(QStringLiteral("Display Capture"));
+		selected.insert(QStringLiteral("Game Capture"));
+		selected.insert(QStringLiteral("sony"));
+	}
+
+	const QStringList names = enumerate_sources();
+	for (const QString &name : names) {
+		auto *row = new QWidget(this);
+		row->setObjectName(QStringLiteral("msrSourceRow"));
+		auto *hl = new QHBoxLayout(row);
+		hl->setContentsMargins(4, 4, 4, 4);
+		hl->setSpacing(8);
+
+		MsrSrPickRow pr;
+		pr.source_name = name;
+		pr.check = new QCheckBox(name, row);
+		pr.check->setObjectName(QStringLiteral("msrSrCheck"));
+		pr.check->blockSignals(true);
+		pr.check->setChecked(selected.contains(name));
+		pr.check->blockSignals(false);
+		connect(pr.check, &QCheckBox::toggled, this, &MsrDock::on_sr_pick_changed);
+		pr.icon = new QLabel(msr_source_type_icon(name, obs_source_id_for(name)), row);
+		pr.icon->setObjectName(QStringLiteral("msrTypeIcon"));
+		hl->addWidget(pr.check, 1);
+		hl->addWidget(pr.icon, 0, Qt::AlignRight | Qt::AlignVCenter);
+		sr_pick_layout_->addWidget(row);
+		sr_pick_rows_.push_back(pr);
+	}
+	if (names.isEmpty()) {
+		auto *empty = new QLabel(QString::fromUtf8(obs_module_text("SourceRecordPickEmpty")), this);
+		empty->setWordWrap(true);
+		sr_pick_layout_->addWidget(empty);
+	}
+}
+
+void MsrDock::on_sr_pick_changed()
+{
+	apply_to_controller();
+	refresh_output_files();
+}
+
+void MsrDock::on_open_output_file()
+{
+	auto *btn = qobject_cast<QWidget *>(sender());
+	if (!btn)
+		return;
+	const QString path = btn->property("msrPath").toString();
+	if (path.isEmpty())
+		return;
+	const QFileInfo fi(path);
+	const QString folder = fi.exists() ? fi.absolutePath() : path;
+	QDesktopServices::openUrl(QUrl::fromLocalFile(folder));
+}
+
+void MsrDock::refresh_output_files()
+{
+	if (!output_files_layout_)
+		return;
+	while (QLayoutItem *item = output_files_layout_->takeAt(0)) {
+		if (QWidget *w = item->widget())
+			w->deleteLater();
+		delete item;
+	}
+
+	QString folder;
+	if (folder_edit_)
+		folder = folder_edit_->text().trimmed();
+	if (folder.isEmpty()) {
+		if (auto *c = MsrController::instance())
+			folder = QString::fromStdString(c->settings().output_folder);
+	}
+
+	QStringList targets;
+	for (const auto &row : sr_pick_rows_) {
+		if (row.check && row.check->isChecked())
+			targets << row.source_name;
+	}
+	if (targets.isEmpty()) {
+		if (auto *c = MsrController::instance()) {
+			for (const auto &n : c->source_record_targets())
+				targets << QString::fromStdString(n);
+		}
+	}
+
+	auto resolve_dir = [&](const QString &source_name) -> QString {
+		obs_source_t *src = obs_get_source_by_name(source_name.toUtf8().constData());
+		if (!src)
+			return folder;
+		QString filter_name = QStringLiteral("Source Record");
+		if (source_record_filter_edit_ && !source_record_filter_edit_->text().trimmed().isEmpty())
+			filter_name = source_record_filter_edit_->text().trimmed();
+		obs_source_t *f = obs_source_get_filter_by_name(src, filter_name.toUtf8().constData());
+		obs_source_release(src);
+		if (!f)
+			return folder;
+		obs_data_t *st = obs_source_get_settings(f);
+		obs_source_release(f);
+		QString path;
+		if (st) {
+			const char *p = obs_data_get_string(st, "path");
+			if (p && *p)
+				path = QString::fromUtf8(p);
+			obs_data_release(st);
+		}
+		return path.isEmpty() ? folder : path;
+	};
+
+	bool any = false;
+	for (const QString &name : targets) {
+		const QString dir_path = resolve_dir(name);
+		if (dir_path.isEmpty())
+			continue;
+		QDir dir(dir_path);
+		if (!dir.exists())
+			continue;
+		const QFileInfoList files = dir.entryInfoList(
+			QStringList{QStringLiteral("*.mkv"), QStringLiteral("*.mp4"), QStringLiteral("*.mov"),
+				    QStringLiteral("*.flv"), QStringLiteral("*.ts")},
+			QDir::Files, QDir::Time);
+		QFileInfo best;
+		for (const QFileInfo &fi : files) {
+			if (fi.fileName().startsWith(name, Qt::CaseInsensitive)) {
+				best = fi;
+				break;
+			}
+		}
+		if (!best.exists())
+			continue;
+
+		any = true;
+		auto *card = new QPushButton(this);
+		card->setObjectName(QStringLiteral("msrFileCard"));
+		card->setCursor(Qt::PointingHandCursor);
+		card->setProperty("msrPath", best.absoluteFilePath());
+		card->setStyleSheet(
+			QStringLiteral("QPushButton#msrFileCard { text-align: left; padding: 8px 10px; "
+				       "background: #16161c; border: 1px solid #2f2f38; border-radius: 10px; }"
+				       "QPushButton#msrFileCard:hover { border-color: #8b5cf6; }"));
+		const QString icon = msr_source_type_icon(name, obs_source_id_for(name));
+		const QString meta =
+			QString::fromUtf8(obs_module_text("OutputFileMetaFallback")).arg(best.absolutePath());
+		card->setText(QStringLiteral("%1  %2\n%3").arg(icon, best.fileName(), meta));
+		connect(card, &QPushButton::clicked, this, &MsrDock::on_open_output_file);
+		output_files_layout_->addWidget(card);
+	}
+
+	if (!any) {
+		auto *empty = new QLabel(QString::fromUtf8(obs_module_text("OutputFilesEmpty")), this);
+		empty->setWordWrap(true);
+		empty->setObjectName(QStringLiteral("msrFileMeta"));
+		output_files_layout_->addWidget(empty);
+	}
 }
