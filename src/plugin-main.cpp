@@ -24,6 +24,8 @@ the Free Software Foundation; either version 2 of the License, or
 #include "msr-sources-inject.hpp"
 
 OBS_DECLARE_MODULE()
+void msr_register_private_audio_source();
+
 OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
 
 MODULE_EXPORT const char *obs_module_description(void)

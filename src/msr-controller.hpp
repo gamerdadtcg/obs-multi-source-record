@@ -127,12 +127,9 @@ private:
 	std::string settings_path() const;
 	void notify_state();
 	void notify_source_record_state();
-	void restore_source_record_audio_routing();
 
 	mutable std::mutex mutex_;
 	MsrSettings settings_;
-	/* Track 6 is reserved for isolated ISO audio while Source Record runs. */
-	std::map<obs_source_t *, uint32_t> sr_previous_audio_mixers_;
 	std::vector<std::unique_ptr<MsrSession>> sessions_;
 	std::vector<std::unique_ptr<MsrSession>> replay_sessions_;
 	std::vector<std::unique_ptr<MsrStreamSession>> stream_sessions_;

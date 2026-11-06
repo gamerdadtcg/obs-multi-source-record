@@ -9,6 +9,7 @@ the Free Software Foundation; either version 2 of the License, or
 */
 
 #include "msr-controller.hpp"
+#include "msr-private-audio.hpp"
 
 #include <cstdint>
 #include "msr-stream-session.hpp"
@@ -50,7 +51,7 @@ void MsrController::destroy()
 
 MsrController::~MsrController()
 {
-	restore_source_record_audio_routing();
+	MsrSourceRecordAudio::instance().stop();
 	unregister_hotkey();
 	stop_streams();
 	stop_replays();
@@ -1150,19 +1151,6 @@ size_t MsrController::apply_source_record_filename_formats()
 	return ok_n;
 }
 
-namespace {
-constexpr int kSourceRecordTrack = 6;
-}
-
-void MsrController::restore_source_record_audio_routing()
-{
-	for (auto &entry : sr_previous_audio_mixers_) {
-		obs_source_set_audio_mixers(entry.first, entry.second);
-		obs_source_release(entry.first);
-	}
-	sr_previous_audio_mixers_.clear();
-}
-
 size_t MsrController::apply_source_record_audio_settings()
 {
 	std::string filter_name;
@@ -1208,24 +1196,27 @@ size_t MsrController::apply_source_record_audio_settings()
 		const std::string selected_audio = audio_for(name);
 		const std::string audio = selected_audio.empty() ? name : selected_audio;
 		obs_source_t *audio_src = obs_get_source_by_name(audio.c_str());
-		if (!audio_src) {
-			obs_log(LOG_WARNING, "source record: audio source '%s' not found", audio.c_str());
-			obs_data_release(settings);
-			obs_source_release(f);
-			continue;
+		const bool has_audio = audio_src && (obs_source_get_output_flags(audio_src) & OBS_SOURCE_AUDIO);
+		if (audio_src)
+			obs_source_release(audio_src);
+		if (!has_audio) {
+			/* A source with no own audio (such as a plain display capture) records
+			 * silence. An explicit alternate source can still supply the ISO audio. */
+			obs_data_set_bool(settings, "different_audio", true);
+			obs_data_set_string(settings, "audio_source", "");
+			obs_data_set_int(settings, "audio_track", 0);
+			obs_log(LOG_WARNING, "source record: '%s' has no audio; ISO audio silent", audio.c_str());
+		} else {
+			const std::string relay = MsrSourceRecordAudio::instance().prepare(name, audio);
+			if (relay.empty()) {
+				obs_data_release(settings);
+				obs_source_release(f);
+				continue;
+			}
+			obs_data_set_bool(settings, "different_audio", true);
+			obs_data_set_string(settings, "audio_source", relay.c_str());
+			obs_data_set_int(settings, "audio_track", 0);
 		}
-		if (!sr_previous_audio_mixers_.count(audio_src)) {
-			audio_src = obs_source_get_ref(audio_src);
-			sr_previous_audio_mixers_[audio_src] = obs_source_get_audio_mixers(audio_src);
-		}
-		/* Source Record's direct-source mode is unreliable for capture inputs.
-		 * Temporarily isolate each selected source on track 6, which makes the
-		 * track encoder contain exactly that source instead of OBS's full mix. */
-		obs_source_set_audio_mixers(audio_src, 1u << (kSourceRecordTrack - 1));
-		obs_source_release(audio_src);
-		obs_data_set_bool(settings, "different_audio", true);
-		obs_data_set_string(settings, "audio_source", audio.c_str());
-		obs_data_set_int(settings, "audio_track", kSourceRecordTrack);
 		obs_source_update(f, settings);
 		obs_data_release(settings);
 		obs_source_release(f);
@@ -1278,7 +1269,7 @@ bool MsrController::set_source_recording(bool enabled)
 		ok_n++;
 	}
 	if (!enabled)
-		restore_source_record_audio_routing();
+		MsrSourceRecordAudio::instance().stop();
 	obs_log(LOG_INFO, "source record %s on %zu/%zu source(s)", enabled ? "enabled" : "disabled", ok_n,
 		targets.size());
 	notify_source_record_state();
