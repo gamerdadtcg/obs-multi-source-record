@@ -1215,7 +1215,7 @@ size_t MsrController::apply_source_record_audio_settings()
 			continue;
 		}
 		if (!sr_previous_audio_mixers_.count(audio_src)) {
-			obs_source_addref(audio_src);
+			audio_src = obs_source_get_ref(audio_src);
 			sr_previous_audio_mixers_[audio_src] = obs_source_get_audio_mixers(audio_src);
 		}
 		/* Source Record's direct-source mode is unreliable for capture inputs.
