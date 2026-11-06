@@ -87,6 +87,8 @@ public:
 	void register_websocket();
 
 private:
+	size_t start_source_recording_outputs();
+	void stop_source_recording_outputs();
 	MsrController() = default;
 	~MsrController();
 
