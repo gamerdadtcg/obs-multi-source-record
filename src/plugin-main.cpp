@@ -113,6 +113,7 @@ static void frontend_event(enum obs_frontend_event event, void *)
 bool obs_module_load(void)
 {
 	obs_log(LOG_INFO, "loading Multi Source Record %s", PLUGIN_VERSION);
+	msr_register_private_audio_source();
 
 	MsrController::create();
 	MsrVerticalCanvas::create();
