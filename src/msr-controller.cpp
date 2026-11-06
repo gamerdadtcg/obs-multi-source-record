@@ -1191,16 +1191,14 @@ size_t MsrController::apply_source_record_audio_settings()
 			obs_source_release(f);
 			continue;
 		}
-		const std::string audio = audio_for(name);
-		if (audio.empty()) {
-			obs_data_set_bool(settings, "different_audio", false);
-			obs_data_set_string(settings, "audio_source", "");
-		} else {
-			obs_data_set_bool(settings, "different_audio", true);
-			obs_data_set_string(settings, "audio_source", audio.c_str());
-			/* Source Record: 0 = None; OBS mixer tracks are 1-based here. */
-			obs_data_set_int(settings, "audio_track", 1);
-		}
+		const std::string selected_audio = audio_for(name);
+		/* Always use OBS mixer track 1 for ISO audio. Source Record's private
+		 * audio_output path can write silent AAC for capture sources; track 0
+		 * means None once Different Audio is enabled. */
+		const std::string audio = selected_audio.empty() ? name : selected_audio;
+		obs_data_set_bool(settings, "different_audio", true);
+		obs_data_set_string(settings, "audio_source", audio.c_str());
+		obs_data_set_int(settings, "audio_track", 1);
 		obs_source_update(f, settings);
 		obs_data_release(settings);
 		obs_source_release(f);
