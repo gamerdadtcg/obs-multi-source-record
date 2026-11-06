@@ -23,6 +23,7 @@ the Free Software Foundation; either version 2 of the License, or
 class MsrSourceRecordAudio {
 public:
 	static MsrSourceRecordAudio &instance();
+	static void register_source();
 
 	std::string prepare(const std::string &iso_source, const std::string &audio_source);
 	void stop();

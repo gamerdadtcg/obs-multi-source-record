@@ -53,7 +53,7 @@ void MsrSourceRecordAudio::capture_callback(void *param, obs_source_t *source, c
  * Source Record's separate input does. No copy, conversion or mixer routing. */
 	struct obs_source_audio out = {};
 	out.frames = audio_data->frames;
-	out.speakers = audio_output_get_channels(obs_get_audio());
+	out.speakers = SPEAKERS_STEREO;
 	out.samples_per_sec = audio_output_get_sample_rate(obs_get_audio());
 	out.format = AUDIO_FORMAT_FLOAT_PLANAR;
 	out.timestamp = audio_data->timestamp;
@@ -89,8 +89,7 @@ std::string MsrSourceRecordAudio::prepare(const std::string &iso_source, const s
 	const std::string relay_name = std::string(kRelayPrefix) + iso_source;
 	/* Lookup must be a public source for Source Record. Keep it hidden from
 	 * the UI, with no scene reference. It never changes any mixer state. */
-	obs_source_t *relay = obs_source_create_set_last_ver(kRelayType, relay_name.c_str(), nullptr, nullptr, nullptr,
-							     false, LIBOBS_API_VER, nullptr);
+	obs_source_t *relay = obs_source_create(kRelayType, relay_name.c_str(), nullptr, nullptr);
 	if (!relay) {
 		obs_source_release(captured);
 		return {};
@@ -132,11 +131,15 @@ const struct obs_source_info MsrSourceRecordAudio::relay_info = {
 	.get_name = [](void *) { return "MSR Private ISO Audio"; },
 	.create = relay_create,
 	.destroy = relay_destroy,
-	.get_output_flags = relay_flags,
 };
+
+void MsrSourceRecordAudio::register_source()
+{
+	obs_register_source(&relay_info);
+}
 
 void msr_register_private_audio_source()
 {
-	obs_register_source(&MsrSourceRecordAudio::relay_info);
+	MsrSourceRecordAudio::register_source();
 	obs_enum_sources(cleanup_stale_relay, nullptr);
 }
