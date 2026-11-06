@@ -131,6 +131,8 @@ private:
 	mutable std::mutex mutex_;
 	MsrSettings settings_;
 	std::vector<std::unique_ptr<MsrSession>> sessions_;
+	std::vector<std::unique_ptr<MsrSession>> source_record_sessions_;
+	bool source_record_sessions_active_ = false;
 	std::vector<std::unique_ptr<MsrSession>> replay_sessions_;
 	std::vector<std::unique_ptr<MsrStreamSession>> stream_sessions_;
 	obs_hotkey_id hotkey_id_ = OBS_INVALID_HOTKEY_ID;

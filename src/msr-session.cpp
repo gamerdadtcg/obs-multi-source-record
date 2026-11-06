@@ -138,16 +138,15 @@ void MsrSession::push_captured_audio(obs_source_t *source, const struct audio_da
 {
 	if (muted || !audio_data->frames || paused_.load())
 		return;
+	if (activated_extra_ && source != activated_extra_)
+		return; /* selected ISO replacement; do not mix the video source's audio */
 
 	std::lock_guard<std::mutex> lock(audio_mutex_);
 	have_capture_audio_ = true;
 	/* Extra must be a different source — same-pointer would mean we registered
 	 * the capture callback twice and every buffer would be appended twice
 	 * (half-speed / chunk-stutter; seen on Game Capture ISO). */
-	if (activated_extra_ && source == activated_extra_ && activated_extra_ != activated_source_)
-		fifo_extra_.push_planar(audio_data);
-	else
-		fifo_main_.push_planar(audio_data);
+	fifo_main_.push_planar(audio_data);
 }
 
 bool MsrSession::pop_captured_audio(struct audio_output_data *mixes, uint32_t mixers, size_t channels)
@@ -439,27 +438,19 @@ bool MsrSession::setup_audio()
 		return true;
 	}
 
-	/* Ignore extra when blank or the same as the video source — selecting
-	 * "Game Capture" as its own extra registered the callback twice and
-	 * doubled every audio buffer in the FIFO. */
 	if (!extra_audio_name_.empty() && extra_audio_name_ != source_name_) {
 		obs_source_t *extra = obs_get_source_by_name(extra_audio_name_.c_str());
-		if (extra && extra == activated_source_) {
-			obs_log(LOG_WARNING, "extra audio '%s' is the same source; ignoring",
-				extra_audio_name_.c_str());
-			obs_source_release(extra);
-		} else if (extra) {
-			activate_source(extra);
-			activated_extra_ = extra;
-			weak_extra_audio_ = obs_source_get_weak_source(extra);
-		} else {
-			obs_log(LOG_WARNING, "extra audio source '%s' not found", extra_audio_name_.c_str());
+		if (!extra) {
+			obs_log(LOG_ERROR, "selected ISO audio '%s' not found for '%s'", extra_audio_name_.c_str(),
+				source_name_.c_str());
+			return false;
 		}
-	} else if (!extra_audio_name_.empty() && extra_audio_name_ == source_name_) {
-		obs_log(LOG_WARNING, "extra audio for '%s' points at itself; ignoring", source_name_.c_str());
+		activate_source(extra);
+		activated_extra_ = extra;
+		weak_extra_audio_ = obs_source_get_weak_source(extra);
 	}
 
-	if (activated_source_) {
+	if (activated_source_ && !activated_extra_) {
 		obs_source_add_audio_capture_callback(activated_source_, audio_capture_callback, this);
 		capture_cb_source_ = true;
 	}

@@ -1029,29 +1029,10 @@ std::vector<std::string> MsrController::source_record_targets() const
 
 bool MsrController::source_recording() const
 {
-	std::string filter_name;
-	{
-		std::lock_guard<std::mutex> lock(mutex_);
-		filter_name = settings_.source_record_filter;
-	}
-	if (filter_name.empty())
-		return false;
-	const auto targets = source_record_targets();
-	if (targets.empty())
-		return false;
-	for (const auto &name : targets) {
-		obs_source_t *src = obs_get_source_by_name(name.c_str());
-		if (!src)
-			continue;
-		obs_source_t *f = obs_source_get_filter_by_name(src, filter_name.c_str());
-		obs_source_release(src);
-		if (!f)
-			continue;
-		const bool en = obs_source_enabled(f);
-		obs_source_release(f);
-		if (en)
+	std::lock_guard<std::mutex> lock(mutex_);
+	for (const auto &session : source_record_sessions_)
+		if (session && session->active())
 			return true;
-	}
 	return false;
 }
 
@@ -1153,132 +1134,97 @@ size_t MsrController::apply_source_record_filename_formats()
 
 size_t MsrController::apply_source_record_audio_settings()
 {
-	std::string filter_name;
-	std::vector<std::string> targets;
-	std::vector<MsrSettings::SourceRecordAudio> audio_rows;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
-		filter_name = settings_.source_record_filter;
-		audio_rows = settings_.source_record_audio;
-		if (!settings_.source_record_sources.empty()) {
-			targets = settings_.source_record_sources;
-		}
+		if (!source_record_sessions_active_)
+			return 0;
 	}
-	if (filter_name.empty())
-		return 0;
-	if (targets.empty()) {
-		/* Auto-discover: same rule as source_record_targets() without nested lock. */
-		targets = source_record_targets();
-	}
-
-	auto audio_for = [&](const std::string &src) -> std::string {
-		for (const auto &row : audio_rows) {
-			if (row.source_name == src)
-				return row.audio_source;
-		}
-		return {};
-	};
-
-	size_t ok_n = 0;
-	for (const auto &name : targets) {
-		obs_source_t *src = obs_get_source_by_name(name.c_str());
-		if (!src)
-			continue;
-		obs_source_t *f = obs_source_get_filter_by_name(src, filter_name.c_str());
-		obs_source_release(src);
-		if (!f)
-			continue;
-		obs_data_t *settings = obs_source_get_settings(f);
-		if (!settings) {
-			obs_source_release(f);
-			continue;
-		}
-		obs_data_set_bool(settings, "different_audio", false);
-		obs_data_set_int(settings, "audio_track", 0);
-		obs_source_update(f, settings);
-		obs_data_release(settings);
-		settings = obs_source_get_settings(f);
-		const std::string selected_audio = audio_for(name);
-		const std::string audio = selected_audio.empty() ? name : selected_audio;
-		obs_source_t *audio_src = obs_get_source_by_name(audio.c_str());
-		const bool has_audio = audio_src && (obs_source_get_output_flags(audio_src) & OBS_SOURCE_AUDIO);
-		if (audio_src)
-			obs_source_release(audio_src);
-		if (!has_audio) {
-			/* A source with no own audio (such as a plain display capture) records
-			 * silence. An explicit alternate source can still supply the ISO audio. */
-			obs_data_set_bool(settings, "different_audio", true);
-			obs_data_set_string(settings, "audio_source", "");
-			obs_data_set_int(settings, "audio_track", 0);
-			obs_log(LOG_WARNING, "source record: '%s' has no audio; ISO audio silent", audio.c_str());
-		} else {
-			const std::string relay = MsrSourceRecordAudio::instance().prepare(name, audio);
-			if (relay.empty()) {
-				obs_data_release(settings);
-				obs_source_release(f);
-				continue;
-			}
-			obs_data_set_bool(settings, "different_audio", true);
-			obs_data_set_string(settings, "audio_source", relay.c_str());
-			obs_data_set_int(settings, "audio_track", 0);
-		}
-		obs_source_update(f, settings);
-		obs_data_release(settings);
-		obs_source_release(f);
-		obs_log(LOG_INFO, "source record: audio on '%s' -> %s", name.c_str(),
-			audio.empty() ? "source audio" : audio.c_str());
-		ok_n++;
-	}
-	return ok_n;
+	stop_source_recording_outputs();
+	const size_t count = start_source_recording_outputs();
+	notify_source_record_state();
+	return count;
 }
 
 bool MsrController::set_source_recording(bool enabled)
 {
-	std::string filter_name;
+	if (!enabled) {
+		stop_source_recording_outputs();
+		notify_source_record_state();
+		return true;
+	}
+	stop_source_recording_outputs();
+	const size_t started = start_source_recording_outputs();
+	obs_log(LOG_INFO, "MSR private audio ISO record started on %zu source(s); no mixer changes", started);
+	notify_source_record_state();
+	return started > 0;
+}
+
+void MsrController::stop_source_recording_outputs()
+{
+	std::vector<std::unique_ptr<MsrSession>> sessions;
+	MsrSettings snap;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
-		filter_name = settings_.source_record_filter;
+		sessions = std::move(source_record_sessions_);
+		source_record_sessions_.clear();
+		source_record_sessions_active_ = false;
+		snap = settings_;
 	}
-	if (filter_name.empty()) {
-		obs_log(LOG_WARNING, "source record: filter name empty");
-		return false;
+	for (auto &session : sessions) {
+		if (session)
+			session->stop();
 	}
-	const auto targets = source_record_targets();
-	if (targets.empty()) {
-		obs_log(LOG_WARNING, "source record: no target sources (set source_record_sources or add '%s' filters)",
-			filter_name.c_str());
-		notify_source_record_state();
-		return false;
-	}
-	if (enabled) {
-		apply_source_record_filename_formats();
-		apply_source_record_audio_settings();
-	}
-	size_t ok_n = 0;
-	for (const auto &name : targets) {
+	MsrSourceRecordAudio::instance().stop();
+	for (const auto &name : source_record_targets()) {
 		obs_source_t *src = obs_get_source_by_name(name.c_str());
-		if (!src) {
-			obs_log(LOG_WARNING, "source record: source '%s' not found", name.c_str());
-			continue;
+		if (src) {
+			obs_source_t *f = obs_source_get_filter_by_name(src, snap.source_record_filter.c_str());
+			obs_source_set_enabled(f, false);
+			obs_data_t *settings = obs_data_create();
+			obs_data_set_int(settings, "record_mode", 0);
+			obs_source_update(f, settings);
+			obs_data_release(settings);
+			obs_source_release(f);
 		}
-		obs_source_t *f = obs_source_get_filter_by_name(src, filter_name.c_str());
-		if (!f) {
-			obs_log(LOG_WARNING, "source record: filter '%s' missing on '%s'", filter_name.c_str(),
-				name.c_str());
-			obs_source_release(src);
-			continue;
-		}
-		obs_source_set_enabled(f, enabled);
-		obs_source_release(f);
 		obs_source_release(src);
-		ok_n++;
 	}
-	if (!enabled)
-		MsrSourceRecordAudio::instance().stop();
-	obs_log(LOG_INFO, "source record %s on %zu/%zu source(s)", enabled ? "enabled" : "disabled", ok_n,
-		targets.size());
-	notify_source_record_state();
-	return ok_n > 0;
+}
+
+size_t MsrController::start_source_recording_outputs()
+{
+	MsrSettings snap;
+	std::vector<std::string> targets;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		snap = settings_;
+	}
+	targets = source_record_targets();
+	if (snap.output_folder.empty())
+		return 0;
+	std::vector<std::unique_ptr<MsrSession>> started;
+	for (const std::string &name : targets) {
+		const std::string audio = source_record_audio_for(snap, name);
+		const char *chosen = audio.empty() ? name.c_str() : audio.c_str();
+		obs_source_t *sel = obs_get_source_by_name(chosen);
+		const bool has_audio = sel && (obs_source_get_output_flags(sel) & OBS_SOURCE_AUDIO);
+		if (sel)
+			obs_source_release(sel);
+		if (!has_audio) {
+			obs_log(LOG_WARNING, "ISO audio: '%s' has no audio; skipped silent ISO", chosen);
+			continue;
+		}
+		auto session = std::make_unique<MsrSession>(name, MsrOrientation::Horizontal, audio, snap, false,
+							    MsrSessionKind::Record);
+		if (session->start()) {
+			obs_log(LOG_INFO, "ISO audio: '%s' records only '%s' (private audio encoder)", name.c_str(),
+				chosen);
+			started.push_back(std::move(session));
+		}
+	}
+	std::lock_guard<std::mutex> lock(mutex_);
+	source_record_sessions_ = std::move(started);
+	source_record_sessions_active_ = !source_record_sessions_.empty();
+	return source_record_sessions_.size();
 }
 
 bool MsrController::toggle_source_recording()
