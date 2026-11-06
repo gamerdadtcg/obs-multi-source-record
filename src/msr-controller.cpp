@@ -1198,7 +1198,8 @@ size_t MsrController::apply_source_record_audio_settings()
 		} else {
 			obs_data_set_bool(settings, "different_audio", true);
 			obs_data_set_string(settings, "audio_source", audio.c_str());
-			obs_data_set_int(settings, "audio_track", 0);
+			/* Source Record: 0 = None; OBS mixer tracks are 1-based here. */
+			obs_data_set_int(settings, "audio_track", 1);
 		}
 		obs_source_update(f, settings);
 		obs_data_release(settings);
