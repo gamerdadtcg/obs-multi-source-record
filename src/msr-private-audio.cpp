@@ -16,7 +16,7 @@ the Free Software Foundation; either version 2 of the License, or
 namespace {
 constexpr const char *kRelayPrefix = "msr_iso_audio_";
 constexpr const char *kRelayType = "msr_iso_audio_relay";
-}
+} // namespace
 
 MsrSourceRecordAudio &MsrSourceRecordAudio::instance()
 {
@@ -114,36 +114,26 @@ void MsrSourceRecordAudio::stop()
 	relays_.clear();
 }
 
-void msr_cleanup_stale_private_audio_sources()
+static bool cleanup_stale_relay(void *, obs_source_t *source)
 {
-	obs_enum_sources([](void *, obs_source_t *source) -> bool {
-		{
-			if (std::string(obs_source_get_unversioned_id(source) ? obs_source_get_unversioned_id(source)
-									      : "") == kRelayType)
-				obs_source_remove(source);
-			return true;
-		}
+	const char *id = obs_source_get_unversioned_id(source);
+	if (id && std::string(id) == kRelayType)
+		obs_source_remove(source);
+	return true;
+}
 
-		const struct obs_source_info MsrSourceRecordAudio::relay_info = {
-			.id = kRelayType,
-			.type = OBS_SOURCE_TYPE_INPUT,
-			.output_flags = OBS_SOURCE_AUDIO | OBS_SOURCE_DO_NOT_DUPLICATE | OBS_SOURCE_CAP_DISABLED,
-			.get_name = [](void *) { return "MSR Private ISO Audio"; },
-			.create = relay_create,
-			.destroy = relay_destroy,
-			.get_output_flags = relay_flags,
-		};
+const struct obs_source_info MsrSourceRecordAudio::relay_info = {
+	.id = kRelayType,
+	.type = OBS_SOURCE_TYPE_INPUT,
+	.output_flags = OBS_SOURCE_AUDIO | OBS_SOURCE_DO_NOT_DUPLICATE | OBS_SOURCE_CAP_DISABLED,
+	.get_name = [](void *) { return "MSR Private ISO Audio"; },
+	.create = relay_create,
+	.destroy = relay_destroy,
+	.get_output_flags = relay_flags,
+};
 
-		static bool cleanup_stale_relay(void *, obs_source_t *source)
-		{
-			const char *id = obs_source_get_unversioned_id(source);
-			if (id && std::string(id) == kRelayType)
-				obs_source_remove(source);
-			return true;
-		}
-
-		void msr_register_private_audio_source()
-		{
-			obs_register_source(&MsrSourceRecordAudio::relay_info);
-			obs_enum_sources(cleanup_stale_relay, nullptr);
-		}
+void msr_register_private_audio_source()
+{
+	obs_register_source(&MsrSourceRecordAudio::relay_info);
+	obs_enum_sources(cleanup_stale_relay, nullptr);
+}
