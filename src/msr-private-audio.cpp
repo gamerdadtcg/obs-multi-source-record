@@ -73,8 +73,9 @@ std::string MsrSourceRecordAudio::prepare(const std::string &iso_source, const s
 		obs_source_remove_audio_capture_callback(
 			found->second.captured, capture_callback,
 			static_cast<RelayContext *>(obs_obj_get_data(found->second.relay)));
-		obs_source_dec_active(found->second.captured);
-		obs_source_dec_showing(found->second.captured);
+		obs_source_dec_active(found->second.relay);
+		obs_source_dec_showing(found->second.relay);
+
 		obs_source_release(found->second.captured);
 		obs_source_release(found->second.relay);
 		relays_.erase(found);
@@ -108,6 +109,8 @@ void MsrSourceRecordAudio::stop()
 		Relay &r = entry.second;
 		obs_source_remove_audio_capture_callback(r.captured, capture_callback,
 							 static_cast<RelayContext *>(obs_obj_get_data(r.relay)));
+		obs_source_dec_active(r.relay);
+		obs_source_dec_showing(r.relay);
 		obs_source_release(r.captured);
 		obs_source_release(r.relay);
 	}

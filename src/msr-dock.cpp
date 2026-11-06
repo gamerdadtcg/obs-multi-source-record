@@ -469,6 +469,8 @@ QStringList MsrDock::enumerate_audio_sources() const
 	out.push_back(QString());
 	SourceListCtx ctx{&out, true};
 	obs_enum_sources(enum_sources_cb, &ctx);
+	out.removeAll("Source audio");
+	out.removeIf([](const QString &name) { return name.startsWith("msr_iso_audio_"); });
 	return out;
 }
 
@@ -1196,6 +1198,12 @@ void MsrDock::rebuild_sr_picker()
 		pr.audio->setMinimumWidth(110);
 		pr.audio->setMaximumWidth(160);
 		pr.audio->setToolTip(QString::fromUtf8(obs_module_text("SourceRecordAudioTooltip")));
+		obs_source_t *source = obs_get_source_by_name(name.toUtf8().constData());
+		if (source) {
+			if ((obs_source_get_output_flags(source) & OBS_SOURCE_AUDIO) == 0)
+				pr.audio->setToolTip(pr.audio->toolTip() + "\n" + name + ": no audio (silent).");
+			obs_source_release(source);
+		}
 		pr.audio->addItem(QString::fromUtf8(obs_module_text("SourceRecordAudioSource")), QString());
 		for (const QString &a : audio_names) {
 			if (a.isEmpty() || a == name)
