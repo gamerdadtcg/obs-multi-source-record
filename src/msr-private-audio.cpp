@@ -124,18 +124,19 @@ static bool cleanup_stale_relay(void *, obs_source_t *source)
 	return true;
 }
 
-const struct obs_source_info MsrSourceRecordAudio::relay_info = {
-	.id = kRelayType,
-	.type = OBS_SOURCE_TYPE_INPUT,
-	.output_flags = OBS_SOURCE_AUDIO | OBS_SOURCE_DO_NOT_DUPLICATE | OBS_SOURCE_CAP_DISABLED,
-	.get_name = [](void *) { return "MSR Private ISO Audio"; },
-	.create = relay_create,
-	.destroy = relay_destroy,
-};
-
+struct obs_source_info msr_private_audio_relay_info = {};
 void MsrSourceRecordAudio::register_source()
 {
-	obs_register_source(&relay_info);
+	msr_private_audio_relay_info.id = kRelayType;
+	msr_private_audio_relay_info.type = OBS_SOURCE_TYPE_INPUT;
+	msr_private_audio_relay_info.output_flags = OBS_SOURCE_AUDIO | OBS_SOURCE_DO_NOT_DUPLICATE |
+						    OBS_SOURCE_CAP_DISABLED;
+	msr_private_audio_relay_info.get_name = [](void *) {
+		return "MSR Private ISO Audio";
+	};
+	msr_private_audio_relay_info.create = relay_create;
+	msr_private_audio_relay_info.destroy = relay_destroy;
+	obs_register_source_s(&msr_private_audio_relay_info, sizeof(msr_private_audio_relay_info));
 }
 
 void msr_register_private_audio_source()

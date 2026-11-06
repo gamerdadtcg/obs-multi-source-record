@@ -11,7 +11,6 @@ the Free Software Foundation; either version 2 of the License, or
 
 #include <obs.h>
 #include <obs-module.h>
-#include <obs-module.h>
 
 #include <cstdint>
 #include <map>
@@ -37,7 +36,6 @@ private:
 		obs_source_t *relay = nullptr;
 	};
 
-	static const struct obs_source_info relay_info;
 	static void *relay_create(obs_data_t *settings, obs_source_t *source);
 	static void relay_destroy(void *data);
 	static uint32_t relay_flags(void *data);
