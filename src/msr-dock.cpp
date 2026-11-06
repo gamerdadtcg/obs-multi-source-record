@@ -459,6 +459,7 @@ QStringList MsrDock::enumerate_sources() const
 	QStringList out;
 	SourceListCtx ctx{&out, false};
 	obs_enum_sources(enum_sources_cb, &ctx);
+	out.removeIf([](const QString &name) { return name.startsWith("msr_iso_audio_"); });
 	out.sort(Qt::CaseInsensitive);
 	return out;
 }
