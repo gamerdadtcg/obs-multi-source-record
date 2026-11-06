@@ -53,13 +53,18 @@ void MsrSourceRecordAudio::capture_callback(void *param, obs_source_t *source, c
  * Source Record's separate input does. No copy, conversion or mixer routing. */
 	struct obs_source_audio out = {};
 	out.frames = audio_data->frames;
-	out.speakers = SPEAKERS_STEREO;
-	out.samples_per_sec = audio_output_get_sample_rate(obs_get_audio());
+	struct obs_audio_info info = {};
+	obs_get_audio_info(&info);
+	out.speakers = info.speakers;
+	out.samples_per_sec = info.samples_per_sec ? info.samples_per_sec : 48000;
 	out.format = AUDIO_FORMAT_FLOAT_PLANAR;
 	out.timestamp = audio_data->timestamp;
 	for (size_t ch = 0; ch < MAX_AV_PLANES; ch++)
 		out.data[ch] = audio_data->data[ch];
 	obs_source_output_audio(ctx->source, &out);
+	if (ctx->received++ == 0)
+		obs_log(LOG_INFO, "ISO relay first audio: %u frames @ %u Hz, format %u, speakers %d",
+			audio_data->frames, out.samples_per_sec, (unsigned)out.format, (int)out.speakers);
 }
 
 std::string MsrSourceRecordAudio::prepare(const std::string &iso_source, const std::string &audio_source)
@@ -94,6 +99,8 @@ std::string MsrSourceRecordAudio::prepare(const std::string &iso_source, const s
 		obs_source_release(captured);
 		return {};
 	}
+	obs_source_inc_active(relay);
+	obs_source_inc_showing(relay);
 	obs_source_add_audio_capture_callback(captured, capture_callback,
 					      static_cast<RelayContext *>(obs_obj_get_data(relay)));
 	relays_[iso_source] = Relay{captured, relay};

@@ -1193,6 +1193,11 @@ size_t MsrController::apply_source_record_audio_settings()
 			obs_source_release(f);
 			continue;
 		}
+		obs_data_set_bool(settings, "different_audio", false);
+		obs_data_set_int(settings, "audio_track", 0);
+		obs_source_update(f, settings);
+		obs_data_release(settings);
+		settings = obs_source_get_settings(f);
 		const std::string selected_audio = audio_for(name);
 		const std::string audio = selected_audio.empty() ? name : selected_audio;
 		obs_source_t *audio_src = obs_get_source_by_name(audio.c_str());

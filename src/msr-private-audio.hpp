@@ -30,6 +30,7 @@ public:
 private:
 	struct RelayContext {
 		obs_source_t *source = nullptr;
+		uint64_t received = 0;
 	};
 	struct Relay {
 		obs_source_t *captured = nullptr;
